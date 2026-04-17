@@ -1,0 +1,1361 @@
+AdaptiveFly: Bio-Congruent Adaptation for Embodied
+3DLocomotion
+Lingrong Kong∗
+The University of Tokyo
+Tokyo, Japan
+kong@star.rcast.u-tokyo.ac.jp
+Amaury Dechaux
+Florida Atlantic University
+Florida, USA
+adechaux@fau.edu
+Maika Yoshida
+Tohoku University
+Sendai, Japan
+yoshida.maika.q4@dc.tohoku.ac.jp
+Hirosuke Asahi
+The University of Tokyo
+Tokyo, Japan
+hirosuke.asahi@star.rcast.u-
+tokyo.ac.jp
+Jiayi Xu
+The University of Tokyo
+Tokyo, Japan
+xu.jiayi@star.rcast.u-tokyo.ac.jp
+Gowrishankar Ganesh
+Centre National de la Recherche
+Scientifique (CNRS)
+Montpellier, France
+Ganesh.Gowrishankar@lirmm.fr
+Masahiko Inami
+The University of Tokyo
+Tokyo, Japan
+inami@star.rcast.u-tokyo.ac.jp
+V
+e
+l
+ocity
+(c) Fast Steering/ Turning
+(b) Exploration/Observation
+-
++
+(a) User Experience
+Figure 1: Concept of the proposed interaction technique. (a) User experience: The user stands on a sensor-equipped platform
+and wears a VR headset to engage with the system. (b) Exploration / Observation mode (low speed): When the user leans
+forward slightly, the system detects a low velocity and expands the head-control deadzone, allowing free head rotation for
+environmental observation. In this state, gaze direction is decoupled from movement direction. (c) Fast Steering / Turning
+mode (high speed): When the user leans forward significantly, the velocity increases and the deadzone shrinks. In this state,
+head rotation directly affects the flight direction, enabling fast and agile maneuvering.
+Abstract
+Virtual reality (VR) offers compelling opportunities for human
+augmentation, with free three-dimensional (3D) flight enabling
+fluid navigation and immersive spatial exploration. However, most
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+AHs 2026, Okinawa, Japan
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2351-3/26/03
+https://doi.org/10.1145/3795011.3795050
+existing VR flight techniques rely either on abstract input meth-
+ods—leading to sensorimotor mismatch and limited natural inter-
+action—or on static embodied mappings that cannot adapt to the
+dynamic nature of movement. We introduce AdaptiveFly, an embod-
+ied flight technique based on bio-congruent adaptation. AdaptiveFly
+dynamically modulates the coupling between head rotation and
+yaw control according to user speed—loosening it at low speeds
+to allow free gaze movement, and tightening it at high speeds for
+stable steering. It also calibrates control sensitivity to individual
+posture characteristics and incorporates asymmetric pitch map-
+ping to enhance the intuitiveness of vertical motion. A user study
+AHs 2026, March 16–19, 2026, Okinawa, Japan Kong et al.
+confirms that AdaptiveFly enhances naturalness, comfort, and coor-
+dination compared to both abstract and static embodied baselines.
+A proof-of-concept deployment on a physical drone further demon-
+strates the technique’s real-world applicability. This study expands
+the design of embodied VR locomotion and demonstrates the po-
+tential value of adaptive, human-consistent control strategies in 3D
+interfaces and human augmentation technologies.
+CCS Concepts
+• Human-centered computing →Virtual reality; Interaction
+paradigms; Empirical studies in interaction design .
+Keywords
+Virtual Reality, Locomotion Techniques, Embodied Interaction,
+Drone Teleoperation, Human-Robot Interaction
+ACM Reference Format:
+Lingrong Kong, Amaury Dechaux, Maika Yoshida, Hirosuke Asahi, Jiayi
+Xu, Gowrishankar Ganesh, and Masahiko Inami. 2026. AdaptiveFly: Bio-
+Congruent Adaptation for Embodied 3DLocomotion. In The Augmented
+Humans International Conference 2026 (AHs 2026), March 16–19, 2026, Oki-
+nawa, Japan. ACM, New York, NY, USA, 12 pages. https://doi.org/10.1145/
+3795011.3795050
+1 Introduction
+Virtual reality (VR) provides new opportunities for extending hu-
+man capabilities beyond physical limitations, enabling experiences
+that are unattainable in the physical world. Among these, free three-
+dimensional (3D) flight stands out as a notable form of human
+augmentation. Flying allows users to move fluidly through space,
+observe environments from novel vantage points, and traverse large
+or multi-layered structures with ease[24, 30]. Such capabilities are
+valuable across domains including spatial exploration, scientific vi-
+sualization, environmental education, and creative design. In these
+scenarios, users must often navigate while continuously inspecting
+their surroundings, making it essential to support movement and
+free visual exploration simultaneously.
+Most existing VR systems implement 3D movement and flight
+using abstract input mappings such as joysticks, buttons, or thumb-
+sticks. Although easy to implement and broadly compatible, these
+mappings lack body-related motion cues and do not align with
+users’ natural sensorimotor coordination[8]. As a result, they fre-
+quently induce visual–vestibular conflict, reduce immersion, and
+constrain the user’s ability to observe and navigate simultaneously.
+Furthermore, abstract inputs typically occupy the user’s hands, lim-
+iting opportunities for interaction during flight-based tasks that
+require both mobility and environmental awareness.
+To improve naturalness and enhance perceptual freedom, re-
+searchers have proposed embodied flight interfaces that rely on
+body leaning or posture adjustments[26, 27]. These techniques in-
+troduce body-related cues and can reduce discomfort relative to
+abstract mappings[1]. However, most existing embodied flight sys-
+tems depend on static input–output relationships that fail to accom-
+modate the dynamic requirements of 3D locomotion. During natural
+locomotion, users shift between low-speed exploration—requiring
+broad, unconstrained head movements—and high-speed travel,
+where tighter directional coupling becomes necessary. Static map-
+pings cannot reconcile these opposing demands, often leading to
+unintended activations, inconsistent directional control, or reduced
+transparency.
+This limitation points to a broader gap in current locomotion
+research: effective embodied 3D locomotion requires control strate-
+gies that adapt in ways consistent with human sensorimotor be-
+havior. We refer to this as bio-congruent adaptation for embodied
+3D locomotion. Such adaptation aligns system behavior with the
+natural, context-dependent adjustments humans make when coor-
+dinating gaze, head, and body during movement.
+To implement this principle, we present AdaptiveFly, a 4-degree-
+of-freedom embodied flight technique grounded in bio-congruent
+adaptive mechanisms. AdaptiveFly dynamically adjusts the cou-
+pling between head rotation and yaw control based on the user’s
+current speed: at low speeds, the system weakens this coupling to
+support free and uninterrupted visual exploration; at high speeds,
+it strengthens the coupling to maintain intuitive and responsive
+steering. Additionally, the system automatically calibrates control
+sensitivity to the user’s individual posture characteristics, reducing
+unintentional input. An asymmetric pitch mapping founded on hu-
+man gaze biomechanics further enhances comfort and intuitiveness
+during vertical movements. Together, these components instan-
+tiate bio-congruent adaptation within a practical 3D locomotion
+technique, enabling users to explore virtual environments freely
+while maintaining a fluid and intuitive sense of movement. Our
+contributions are as follows:
+•We introduce AdaptiveFly, an embodied, context-adaptive
+3D flight technique that applies the concept of bio-congruent
+adaptation for embodied 3D locomotion and supports free
+visual exploration during movement.
+•Through empirical evaluation, we demonstrate its experi-
+ential benefits over abstract and static embodied baselines
+in terms of naturalness, comfort, and coordination between
+looking and steering.
+•Based on our findings, we provide design implications
+for human-augmentation and 3D user interface research,
+highlighting the importance of context-adaptive and bio-
+congruent control in achieving natural embodied locomo-
+tion.
+2 Related Works
+2.1 3D Locomotion in Virtual Environments
+Locomotion techniques in virtual environments have seen diverse
+technical approaches proposed to address the requirement of ex-
+ploring vast virtual spaces within finite physical spaces. Techniques
+such as redirected walking [22] and omnidirectional treadmills [16]
+enable locomotion across vast VR spaces within small physical
+spaces by altering the correspondence between the user’s walking
+actions and actual physical displacement. Additionally, methods
+applying motion-based walking metaphors that can be performed
+while remaining stationary, such as Walking-in-Place (WIP) [ 3]
+and arm-swinging techniques [25], have also been proposed. These
+methods are all characterized by their ability to reference the eco-
+logical standard of real-world walking. In contrast, VR affords the
+possibility of designing three-dimensional locomotion techniques
+AdaptiveFly: Bio-Congruent Adaptation for Embodied 3DLocomotion AHs 2026, March 16–19, 2026, Okinawa, Japan
+that would be impossible in the physical world. However, the lack
+of innate mental models for such modalities complicates the design
+strategy of natural interfaces [29]. Some 3D locomotion methods
+intentionally embrace physically impossible or non-ecological in-
+teraction metaphors. Techniques such as Teleportation enhance
+task efficiency and usability but disrupt spatial continuity, often
+resulting in disorientation [6]. World-in-Miniature (WIM) allows
+users to traverse vast distances instantly or manipulate their po-
+sition from a god-like perspective, but it introduces an exocentric
+viewpoint that can break embodied continuity and requires addi-
+tional cognitive effort to reconcile multiple scales of representation
+[34].
+Parallel to these developments, many locomotion techniques
+can be organized along a spectrum of motor input abstraction. At
+one end of this spectrum are abstract controller-based interfaces
+that treat physical motions as symbolic commands. Joystick-based
+locomotion, for example, offers precision and low fatigue but tends
+to induce cybersickness due to visual-vestibular conflict [8]. At the
+opposite end are physically based mappings, in which metaphor-
+ical interpretations of bodily movements are directly coupled to
+locomotion behaviors. Examples include bird-like flapping gestures
+[24] or grab-and-pull interactions [30]. While such embodied tech-
+niques are reported to enhance the sense of agency and immersion,
+they are associated with difficulties in precise manipulation and
+significant physical load and fatigue [1]. Between these extremes
+lie hybrid techniques that blend physical metaphors with abstract
+control properties. For example, Leaning techniques that map trunk
+inclination to propulsion [26, 27] and Gaze-directed techniques that
+steer movement in the direction of gaze [5] retain physical move-
+ment metaphors while possessing control characteristics similar
+to abstract inputs such as joysticks. Multiple studies suggest that
+these methods may contribute to mitigating cybersickness due to
+the relatively high congruence between visual motion and postu-
+ral changes[1, 26]. Although no universal “gold standard” exists
+for 3D locomotion, research is progressing toward identifying an
+optimal balance along the spectrum —leveraging appropriately ab-
+stracted physical movements to achieve comfortable, immersive,
+and intuitively controllable 3D locomotion.
+2.2 Coupling of Body Motion in Motion-based
+Locomotion
+While locomotion techniques that incorporate physical movement
+generally offer greater intuitiveness and immersion than abstract
+controller-based inputs, they face a structural limitation: the natural
+movement of body parts becomes intrinsically and continuously
+coupled with the system’s locomotion control. This tight coupling
+risks misinterpreting exploratory or task-related movements as
+locomotion commands.
+Gaze-oriented locomotion, which uses HMD orientation or eye
+gaze as the travel vector, has become a default choice in many VR
+applications due to ecological evidence that head and gaze typically
+precede the direction of travel [2, 11]. However, because this method
+algorithmically equates gaze direction with intended movement
+direction, it inhibits the natural behavior of “looking around while
+walking forward, ” producing what is known as the Look–Steer Con-
+flict [4]. This issue has the same root as the Midas Touch problem,
+where "looking constitutes selection" [ 17], and results from the
+system’s over-interpretation of gaze as an indicator of locomotor
+intent. A conventional solution is to introduce a dead zone—an
+interval in which the system does not respond until gaze devia-
+tion exceeds a predefined threshold. Nonlinear control schemes
+have also been shown to alleviate this issue [ 9]. Other counter-
+measures include suppressing unintended actuation by gaze input
+through association with different body parts. For example, tech-
+niques requiring the alignment of both gaze and hand directions
+for steering allow directional input to be decoupled from visual
+attention [37]. Other approaches modify the body part responsible
+for steering. Regarding the comparison with hand-based steering,
+results are inconsistent: some studies suggest that gaze-directed
+steering is superior [35], while others report contrary results [4].
+Alternatively, torso-based steering techniques have demonstrated
+improvements in naturalness, efficiency, and maneuverability [38].
+And recent work shows that leaning-based steering, which is also
+a torso-based steering, can outperform hand-based control during
+dual-task situations, reducing interference between locomotion and
+manual interaction and enhancing overall performance and user
+experience [13]. However, these approaches primarily substitute
+one input modality for another and do not address the underlying
+limitation: physical movements used for perception, balance, or
+task interaction remain statically coupled with the system’s control
+parameters. Because user intent — whether to explore the environ-
+ment visually or to initiate locomotion — fluctuates dynamically
+with context, any static mapping risks recurrent conflicts between
+natural bodily behavior and system interpretation.
+2.3 Adaptive Motion Coupling in Locomotion
+In human locomotor control, the coordination dynamics among
+the eyes, head, and torso are not static but constitute a hierarchi-
+cally organized system that is dynamically reconfigured depending
+on the required range of motion. According to Saeb et al., gaze
+shifts smaller than 20° are accomplished primarily through ocular
+movements, and the contribution of the head remains relatively
+small—approximately one third—up to around 30°[32]. Furthermore,
+Sidenmark et al. reported that the torso contributes substantially to
+rotational behavior only during large-amplitude gaze shifts exceed-
+ing 100°[33]. These findings indicate the existence of a functional
+decoupling zone in which the torso operates mechanically inde-
+pendently from gaze direction during small-amplitude exploratory
+behaviors. During high-speed locomotion or turning maneuvers,
+however, this coordination relationship transitions toward anticipa-
+tory coupling. In such contexts, trajectory prediction takes prece-
+dence over gaze stabilization, and both the head and torso rotate or
+tilt toward the forthcoming movement trajectory to lead the body’s
+heading. As demonstrated by Imai et al., the gaze can substantially
+precede the heading direction at high angular velocities[15], and the
+orientation of the head is controlled to align with the gravitational-
+inertial acceleration (GIA) vector.
+In contrast, virtual reality (VR) environments have been shown
+to reorganize these natural coordination patterns, often resulting in
+dynamics that diverge from those observed in the real world. Pfeil
+et al. found that VR users rely more heavily on head movements
+than on ocular movements when orienting toward targets[ 28],
+AHs 2026, March 16–19, 2026, Okinawa, Japan Kong et al.
+while Horsak et al. reported that the mere use of a head-mounted
+display (HMD) increases mediolateral torso variability and in-
+duces posture-coupling patterns that differ from those in physical
+environments[14]. Speed-dependent coordination also exhibits
+VR-specific alterations: Giphart et al. demonstrated that low-speed
+walking in VR destabilizes arm–leg coordination, causing a prema-
+ture transition to 1:1 coupling compared to natural walking[ 10].
+Brument et al. further showed that when VR navigation methods
+violate the natural speed–curvature relationship (the 1/3 power
+law), the magnitude and timing of anticipatory reorientation of
+the eyes, head, and shoulders differ markedly from those during
+real-world locomotion[7].
+Taken together, real-world locomotion exhibits a hierarchical
+coordination structure in which the relationship among gaze, head,
+and torso transitions flexibly and continuously between decoupling
+and coupling depending on movement amplitude and locomotor
+speed. In VR, however, these natural coordination structures may
+be reorganized in ways that diverge from physical behavior, and it
+remains unclear to what extent real-world coordination dynamics
+and threshold structures generalize to VR settings[23]. Moreover,
+VR display characteristics and locomotion interfaces can directly in-
+fluence users’ perception of affordances, potentially altering the in-
+terdependence of gaze control, postural regulation, and self-motion
+perception[12]. Therefore, achieving bio-congruent 3D locomo-
+tion in VR requires integrating the speed-dependent coordination
+principles and natural threshold structures observed in real-world
+behavior into the underlying VR control mechanisms.
+3 Methodology
+Our core design philosophy is to mimic the natural decoupling zone
+found in human physiology. Research indicates that gaze shifts un-
+der 20◦are purely ocular, while the head contributes significantly
+up to 30◦before the torso engages [32]. Unlike previous methods
+that rotate the virtual body linearly with the head, AdaptiveFly in-
+troduces a non-linear control manifold. We suppress torso rotation
+for head yaws within the ±30◦range, creating a stable zone for
+visual inspection without unintended steering.
+Beyond static thresholds, we incorporate the anticipatory mech-
+anism observed in high-velocity locomotion [15]. We formulated a
+dynamic coupling factor 𝑘 that increases with the user’s angular
+velocity. As the user turns their head faster, the system predicts
+a trajectory change and actively rotates the virtual torso into the
+turn, aligning the view with the Gravito-Inertial Acceleration (GIA)
+vector.
+3.1 Personalized CoP Translation
+A primary limitation of static leaning-based interfaces is their “one-
+size-fits-all” approach. They impose a fixed force threshold (e.g.,
+a 5cm lean) that completely ignores the significant inter-person
+variability in natural postural sway. This makes the interface feel
+unresponsive for some users and overly sensitive for others.
+To address this, we introduce a personalized calibration mech-
+anism. This system is founded on the first of our bio-congruent
+principles: the system must first understand the user’s unique, nat-
+ural body dynamics. During a brief calibration phase (approx. 30
+seconds), the user is asked to stand still and relaxed on the force plat-
+form. We capture the Center of Pressure (CoP) data and model the
+user’s natural sway distribution as a bi-variate Gaussian (N𝑠𝑤𝑎𝑦).
+This statistical model allows us to create a “smart deadzone”
+tailored to each user. The relationship between this model and the
+control activation is illustrated in Figure 2 (c). The control function
+(red curve) is explicitly designed to apply minimal force within the
+range of the user’s natural, unintentional sway (blue curve). Force is
+only applied when the user’s CoP shift (𝑐) significantly exceeds their
+personalized baseline, for example, beyond two standard deviations
+(2𝜎𝑐𝑜𝑝).
+The translational force 𝐹𝑔 applied to the virtual avatar is calcu-
+lated using a normalized sigmoid function, as shown in Equation 1.
+Here, 𝑐 represents the magnitude of the CoP shift from the cali-
+brated center, and 𝜎𝑐𝑜𝑝 is the standard deviation of the user’s sway
+measured in the direction of that shift.
+𝐹𝑔
+𝐹𝑚𝑎𝑥
+= 1
+1 +𝑒−𝛼(𝑐−𝛾𝜎𝑐𝑜𝑝) (1)
+Following the visualization in Figure 2 (c), the parameters𝛼 ≈1.465
+and 𝛾 = 3.5 are used to ensure the force is 10% at 2𝜎𝑐𝑜𝑝 and 50% at
+3.5𝜎𝑐𝑜𝑝.
+3.2 Context-Adaptive Yaw Control
+The second critical limitation of static interfaces is the “Look vs.
+Steer” conflict. When stationary or moving slowly, users will want
+to decouple their head rotation from their body’s direction to ob-
+serve the environment. Conversely, when moving quickly, they
+would want their head and body to be tightly coupled to steer.
+Static mappings cannot accommodate both, breaking transparency.
+Our solution is inspired by human locomotion, which is highly
+context-dependent. Studies show that during locomotion, a change
+in direction is tightly coupled with a preceding head rotation, and
+this coupling becomes much stronger than at rest.AdaptiveFly mir-
+rors this bio-congruence. We propose a Context-Adaptive Yaw con-
+trol that dynamically adjusts the coupling between head rotation
+and yaw rate based on the user’s current velocity.
+The control manifold is illustrated in Figure 2 (b). This mecha-
+nism transparently supports two distinct modes:
+•Low-speed exploration: When velocity 𝑣𝑑 is low, the sys-
+tem uses a large deadzone (𝜇𝑚𝑎𝑥 ≈30◦). This allows the user
+to freely look around without causing unintended steering.
+•High-speed travel: When velocity 𝑣𝑑 is high, the system
+reduces the deadzone to a small value ( 𝜇𝑚𝑖𝑛 ≈12◦). This
+creates a tight, responsive coupling, allowing the user’s head
+gaze to act as a precise steering mechanism.
+The yaw rate ¤𝜙𝑑 is calculated based on the absolute value of the
+user’s head yaw angle |𝜙ℎ|using Equation 2:
+¤𝜙𝑑 = 𝛽
+1 +𝑒−𝛼(|𝜙ℎ|−𝜇𝑣) (2)
+where 𝜇𝑣 is the critical adaptive offset (the deadzone), 𝛼 controls
+the response sharpness, and 𝛽 is the maximum yaw velocity. The
+adaptive offset is not fixed, but is itself a function of the forward
+velocity 𝑣𝑑, as shown in Equation 3:
+𝜇𝑣 = 𝜇𝑚𝑖𝑛 −𝜇𝑚𝑎𝑥
+1 +𝑒𝑘(𝑣𝑑−𝑣𝑡ℎ) +𝜇𝑚𝑎𝑥 (3)
+AdaptiveFly: Bio-Congruent Adaptation for Embodied 3DLocomotion AHs 2026, March 16–19, 2026, Okinawa, Japan
+Pitch
+Fast Steering/Turning Exploration/Observation
+(b) Turning
+(c) Translation in X-Z 
+(d) Capable Behavior
+Force Plate
+CoP
+Yaw
+HMD(a) Translation in Y
+-60°
+-30°
+0°
+30°
+60°
+0
+-1/2
+-1
+Head Pitch Angle (θ_h)
+1/2
+1
+μ_-=-18°
+μ_+=30°
+Sin(θ_d)
+-90°
+-60°
+-30°
+0°
+30°
+60°
+90°
+0
+-β/2
+-β
+-μ_max μ_max
+-μ_min μ_min
+Head Yaw Angle (φ_h)
+ Low Speed High Speed
+β/2 β
+Flying Yaw Rate (φ_d)
+0 1 2 3 4 5 6 7 8
+CoP shift (in σcop)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Sway Distribution (Normalized)
+Response in Force vs Sway
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Force (F
+g
+/F
+max
+)
+7σcop
+3.5σcop
+2σcop
+Figure 2: System Overview. The user controls 3D movement via HMD orientation and a force plate. The system features: (a)
+Asymmetric pitch mapping for vertical translation; (b) Context-Adaptive Yaw control that modulates the Look-and-Steer
+coupling based on flight velocity; and (c) Personalized CoP calibration to filter unintentional sway. (d) This bio-congruent
+approach resolves the trade-off between agile steering and stable observation.
+Here, 𝜇𝑚𝑖𝑛 and 𝜇𝑚𝑎𝑥 are the minimal and maximal deadzone angles,
+𝑣𝑡ℎ is the velocity threshold, and 𝑘 controls the smoothness of the
+transition.
+3.3 Asymmetric Pitch Control
+Finally, to enhance comfort and naturalness during vertical move-
+ment (the 3rd and 4th DoF), we implemented a third bio-congruent
+mechanism for elevation control, mapped to the user’s head pitch.
+AdaptiveFly’s elevation control utilizes an asymmetric map-
+ping. This design is motivated by physiological studies on human
+gaze, which show that the natural contribution of head movement
+is smaller for downwards gazeshifts compared to those directed
+upwards[20, 33].
+As shown in Figure 2 (a), the control mapping is designed to
+be less sensitive for downward head pitches (𝜃ℎ) than for upward
+pitches. This aligns with the natural kinematic constraints of the
+neck and mitigates uncomfortable or extreme movements, particu-
+larly when looking down.
+The elevation angle 𝜃𝑑 is computed from the user’s head pitch
+𝜃ℎ using a Sigmoid function (Equation 4), which is applied with
+two different parameter sets:
+sin(𝜃𝑑)= 1
+1 +𝑒−𝛼(𝜃ℎ−𝜇) (4)
+This function is parameterized with (𝛼+,𝜇+)for positive pitches
+and (𝛼−,𝜇−)for negative pitches to create the bio-congruent asym-
+metry.
+4 Experiment
+To validate the effectiveness of AdaptiveFly, we conducted a user
+study designed to evaluate its performance, motion quality, and
+user experience across different flight tasks. We compared Adap-
+tiveFly against traditional joystick control and two ablated mapping
+embodied flight baselines.
+4.1 Participants
+We recruited 12 participants (6 female, 6 male). The mean age of the
+participants was 25.5 years (𝑆𝐷 = 2.62). The participants possessed
+varying levels of VR and gaming experience, ranging from zero
+to over 20 years. Two additional participants withdrew from the
+study during the first round of experiments due to severe cybersick-
+ness; their data were excluded from the analysis. All participants
+had normal or corrected-to-normal vision, were informed of the
+experimental procedures and potential risks, and provided written
+informed consent. The experimental protocol was approved by the
+local Research Ethics Committee (Approval No. [E2025ALS216-01]).
+4.2 Apparatus
+The experiment was conducted in an environment equipped with a
+high-performance PC, using the Unity 6 engine to render the virtual
+scenes. Participants wore a Meta Quest 3 Head-Mounted Display
+(HMD) for immersive visual feedback and head motion tracking. We
+used a force plate to measure changes in the participant’s Center of
+Pressure (CoP), implemented using the Flexel modular floor system
+AHs 2026, March 16–19, 2026, Okinawa, Japan Kong et al.
+[36]. In our setup, Flexel provided a 6 ×6 grid of sensing cells (36
+cells in total), each derived from quad-pod load sensors, and the
+load distribution was sampled at 80 Hz. Additionally, a standard
+gamepad joystick was used as the baseline condition for abstract
+control.
+4.3 Study Design and Conditions
+The study employed a within-subjects design with Locomotion
+Mode as the independent variable. To rigorously evaluate the con-
+tribution of our adaptive mechanism, we compared our method
+against three baselines:
+•AdaptiveFly (Our Method): Embodied control utilizing a
+Context-Adaptive Yaw/Pitch coupling mechanism.
+•CoupledFly (Fully Coupled): A 1:1 "Gaze-to-Steer" embod-
+ied control, serving as an ablation baseline with the adaptive
+mechanism disabled (coupling strength fixed at 𝛼 = 1.0).
+•StaticFly (Fixed Threshold): Embodied control using fixed
+thresholds for rotation and pitch. Steering and elevation are
+activated via a discrete mechanism: exceeding a 30◦head
+rotation deadzone triggers a constant 60◦/𝑠 turn rate and
+maximum vertical velocity.
+•Joystick (Baseline): Control via a standard gamepad, serv-
+ing as a baseline for abstract control.
+In all embodied control modes, horizontal movement was con-
+trolled by CoP displacement (body lean) on the force plate.
+4.4 Tasks
+To comprehensively evaluate the performance of different locomo-
+tion conditions across scenarios, we designed two distinct tasks
+covering navigation and observation:
+•Task 1. Helix Navigation (Precision): Participants were
+required to fly along a predefined helical path marked by a se-
+ries of dots. This task aimed to assess precise path-following
+capabilities, as shown in Figure 3.
+•Task 2. Orbit Observation (Stability): Participants were
+required to orbit around a central target while keeping their
+gaze fixed on it. This task evaluated the ability to decouple
+view direction from travel direction (resolving the Look-
+Steer conflict).
+4.5 Procedure
+The experimental session began with an explanation of the study’s
+purpose and the signing of informed consent forms, followed by
+the completion of a baseline cybersickness questionnaire. Next, a
+personalized CoP calibration was performed: participants stood
+still on the force plate to calculate their sway distribution and then
+leaned in four cardinal directions to establish their natural range of
+motion. To minimize bias, participants were not explicitly informed
+of the specific locomotion mechanics unless they failed to discover
+the control rules within two minutes.
+Subsequently, they entered a practice scene containing static
+objects like rings and columns and a flock of dynamic fish-like
+boid agents based on the model by Reynolds [31], implemented by
+Lague [21]. Participants practiced by freely chasing the boids or
+navigating through obstacles until they reported proficiency. Once
+familiarized, they completed two tasks under each condition; the
+order was counterbalanced using a 4 ×4 Latin Square. The entire
+procedure is illustrated in Figure 3. Finally, after each condition,
+participants filled out subjective assessment questionnaires (cy-
+bersickness questionnaire first), with mandatory breaks enforced
+between blocks.
+4.6 Data Collection and Metrics
+We collected both objective performance metrics and subjective
+assessment data. For objective metrics, system data was recorded at
+60 Hz and pre-filtered. We analyzed Motion Quality via vertical and
+angular jerk (RMS) to assess smoothness, while Task Performance
+was evaluated by completion time for Task 1 and gaze offset stabil-
+ity (RMSE) for Task 2. Regarding subjective metrics, we employed
+a modified Simulator Sickness Questionnaire (SSQ) [ 18]. To bal-
+ance sensitivity with efficiency, we selected items covering Nausea,
+Oculomotor, and Disorientation; this ensured the capture of gastric
+symptoms induced by continuous locomotion—often omitted by
+the shorter VRSQ [ 19]—while avoiding less relevant autonomic
+symptoms to minimize participant fatigue. Additionally, we mea-
+sured cognitive load using raw NASA-TLX, Sense of Embodiment
+(SoE) (Agency, Bodily Sensation, Self-Location), and custom ratings
+for interaction transparency, flow, and enjoyment.
+5 Analysis and Results
+We used a within-subjects analysis for all measures. For most
+objective metrics and subjective ratings, we employed the non-
+parametric Friedman test to analyze overall differences among
+conditions. When the Friedman test indicated significant effects,
+post-hoc pairwise comparisons were conducted using the Wilcoxon
+signed-rank test with Holm correction. For NASA-TLX overall
+scores, the data met normality assumptions; therefore, we used
+a repeated-measures ANOVA and report the corresponding𝐹 statis-
+tic. The significance level was set at 𝛼 = .05.
+5.1 Task Performance and Motion Quality
+5.1.1 Task 1: Movement. In the precision navigation task, locomo-
+tion mode had a significant effect on both performance and motion
+quality.
+Performance: Significant differences were found in completion
+time (𝜒2 (3)= 13.70,𝑝 = .003). As shown in Figure 4 (a), Coupled-
+Fly was the fastest (𝑀 = 47.38𝑠), significantly faster than Joystick
+(𝑀 = 88.67𝑠,𝑝 = .029). AdaptiveFly (𝑀 = 54.19𝑠) was also faster
+than Joystick (𝑝 = .061, marginally significant). Path offset RMSE
+also showed significant differences (𝜒2 (3)= 8.20,𝑝 = .042). Cou-
+pledFly achieved the highest precision (𝑀 = 3.13𝑚), significantly
+outperforming AdaptiveFly (𝑀 = 3.87𝑚,𝑝 = .009). We also visual-
+ized all trajectories in Figure 5.
+Motion Quality: Average angular velocity showed extremely sig-
+nificant differences ( 𝜒2 (3)= 27.10,𝑝 < .0001). As shown in Fig-
+ure 4 (b), the angular velocity of CoupledFly (𝑀 = 31.76◦/𝑠) was
+significantly higher than that of AdaptiveFly ( 𝑀 = 7.21◦/𝑠) and
+StaticFly (𝑀 = 8.49◦/𝑠) (𝑝 < .003). Furthermore, angular Jerk RMS
+differed significantly (𝜒2 (3)= 21.90,𝑝 < .0001); AdaptiveFly was
+the lowest, significantly lower than all other conditions (𝑝 < .003),
+indicating the smoothest steering control.
+AdaptiveFly: Bio-Congruent Adaptation for Embodied 3DLocomotion AHs 2026, March 16–19, 2026, Okinawa, Japan
+Scene
+User
+HMD
+Force 
+Plate
+HMD
+Force
+Plate
+Scene
+Practice Scene
+FPV
+User
+User
+Task 1 Task 2
+Figure 3: Experiment Setup. Participants wear an HMD and stand on a force plate to calibrate. They then familiarize themselves
+with each motion mode in the practice scene by freely moving, before proceeding to Task 1 and Task 2.
+JS
+SF
+CF
+AF
+0
+20
+40
+60
+80
+100
+Completion Time (s)
+*
+†
+(a) Task 1: Time Completion
+JS
+SF
+CF
+AF
+   0
+   2
+   4
+   6
+   8
+ 10
+Angular Jerk RMS (deg/s³)
+1e6
+**
+**
+** (b) Task 1: Angular Jerk
+JS
+SF
+CF
+AF
+0
+10
+20
+30
+40
+Gaze Deviation RMSE (deg)
+*
+*
+** (c) Task 2: Gaze Precision.
+JS
+SF
+CF
+AF
+0
+500
+1000
+1500
+2000
+2500
+Vertical Jerk RMS (m/s³)
+**
+**
+**
+*
+** (d) Task 2: Vertical Jerk
+Figure 4: Objective Performance and Motion Quality Metrics. (a) Completion Time for Task 1. (b) Angular Jerk RMS, indicating
+steering smoothness. (c) Gaze Deviation RMSE for Task 2, measuring observational stability. (d) Vertical Jerk RMS. AdaptiveFly
+(AF) demonstrates a balance of fast completion times and significantly lower jerk compared to CoupledFly (CF) and Joystick
+(JS). ( †< .1, ** 𝑝 < .05, ** 𝑝 < .01)
+In terms of navigation tasks, AdaptiveFly performed comparably
+to CoupledFly, with both conditions significantly outperforming
+the traditional Joystick baseline. Crucially, however, AdaptiveFly
+demonstrated a distinct advantage over CoupledFly in terms of
+motion quality, exhibiting significantly lower jerk metrics. This
+reduction in jerk implies a smoother motion profile that is less likely
+to induce vestibular conflict. These results suggest that AdaptiveFly
+offers a locomotion paradigm that is not only faster and more
+intuitive than abstract joystick control but also objectively superior
+in user experience, maintaining high performance while mitigating
+cybersickness
+5.1.2 Task 2: Observation. This task was the critical scenario for
+testing the resolution of the "Look vs. Steer" conflict.
+Performance: Gaze offset RMSE showed highly significant differ-
+ences (𝜒2 (3)= 17.70,𝑝 = .0005). As shown in Figure 4 (c), Adaptive-
+Fly demonstrated superior performance (𝑀 = 13.10◦), significantly
+outperforming all other conditions: Joystick (𝑀 = 28.38◦,𝑝 < .05),
+StaticFly (𝑀 = 20.49◦,𝑝 < .05), and CoupledFly (𝑀 = 36.56◦,𝑝 <
+.003). Notably, CoupledFly performed worst in this task. Orbital
+stability RMSE also differed significantly (𝜒2 (3)= 9.10,𝑝 = .028),
+with AdaptiveFly (𝑀 = 2.775𝑚) significantly better than Joystick
+(𝑀 = 5.226𝑚,𝑝 < .015). We also visualized all trajectories and
+participants gaze direction in Figure 6
+Motion Quality: Extremely significant differences were found in
+vertical Jerk RMS (𝜒2 (3)= 29.40,𝑝 < .0001) and vertical acceler-
+ation RMS ( 𝜒2 (3)= 29.40,𝑝 < .0001). As shown in Figure 4 (d),
+AdaptiveFly achieved the lowest values on both metrics, signifi-
+cantly lower than Joystick and CoupledFly (𝑝 < .01), indicating the
+most stable and smooth control in the vertical direction.
+Results in Task 2 strongly validate the effectiveness of Adap-
+tiveFly in resolving the Look-Steer conflict. While the CoupledFly
+suffered from severe unintentional steering during visual inspec-
+tion, AdaptiveFly successfully allowed users to decouple their gaze
+for observation without disrupting their flight trajectory. Further-
+more, the significantly lower jerk metrics confirm that this adaptive
+decoupling not only improves task accuracy but also ensures a
+AHs 2026, March 16–19, 2026, Okinawa, Japan Kong et al.
+0
+25
+X (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+Joystick (X-Z)
+0
+25
+Y (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+Joystick (Y-Z)
+−20
+−10
+0
+10
+20
+X (m)
+−20
+−10
+0
+10
+20
+Y (m)
+Joystick (X-Y)
+0
+25
+X (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+StaticFly (X-Z)
+0
+25
+Y (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+StaticFly (Y-Z)
+−20
+−10
+0
+10
+20
+X (m)
+−20
+−10
+0
+10
+20
+StaticFly (X-Y)
+0
+25
+X (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+CoupledFly (X-Z)
+0
+25
+Y (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+CoupledFly (Y-Z)
+−20
+−10
+0
+10
+20
+X (m)
+−20
+−10
+0
+10
+20
+CoupledFly (X-Y)
+0
+25
+X (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+AdaptiveFly (X-Z)
+0
+25
+Y (m)
+0
+25
+50
+75
+100
+125
+150
+Z (m)
+AdaptiveFly (Y-Z)
+−20
+−10
+0
+10
+20
+X (m)
+−20
+−10
+0
+10
+20
+AdaptiveFly (X-Y)
+Figure 5: Trajectory Visualizations for Task 1. Top-down (X-Z) and side views (X-Y, Y-Z) of participant paths across four
+conditions.
+−40
+−20
+0
+20
+40
+X (m)
+−40
+−20
+0
+20
+40
+Z (m)
+Joystick (X-Z)
+−40
+−20
+0
+20
+40
+X (m)
+StaticFly (X-Z)
+−40
+−20
+0
+20
+40
+X (m)
+CoupledFly (X-Z)
+−40
+−20
+0
+20
+40
+X (m)
+AdaptiveFly (X-Z)
+−40
+−20
+0
+20
+40
+X (m)
+−40
+−20
+0
+20
+40
+Y (m)
+Joystick (X-Y)
+−40
+−20
+0
+20
+40
+X (m)
+StaticFly (X-Y)
+−40
+−20
+0
+20
+40
+X (m)
+CoupledFly (X-Y)
+−40
+−20
+0
+20
+40
+X (m)
+AdaptiveFly (X-Y)
+Figure 6: Trajectory and Gaze Visualizations for Task 2. This task required orbiting a central target. Joystick and CoupledFly
+traces show irregular deviations and corrections. AdaptiveFly enables a consistent circular orbit, confirming that users could
+decouple their head gaze for observation without disrupting their flight path.
+AdaptiveFly: Bio-Congruent Adaptation for Embodied 3DLocomotion AHs 2026, March 16–19, 2026, Okinawa, Japan
+more stable and comfortable hovering experience compared to both
+abstract and static embodied baselines.
+5.2 Subjective Experience
+5.2.1 Cybersickness (Modified SSQ). We analyzed the SSQ scores
+relative to baseline (Delta Scores). As shown in Figure 7 a, for Total
+Severity, although statistical significance was not reached (𝑝 = .082),
+AdaptiveFly yielded the lowest mean score (𝑀 = 0.324), whereas
+StaticFly had the highest (𝑀 = 1.991). Figure 7 b further illustrates
+that AdaptiveFly outperformed all other conditions across every
+dimension evaluated. It is worth noting that we observed high
+standard deviations across all conditions, reflecting the significant
+individual variability in Cybersickness susceptibility. Despite this
+inherent variability, AdaptiveFly consistently yielded the lowest
+Cybersickness scores with minimal variance. This suggests that our
+approach has a strong tendency of improvement across users with
+varying degrees of VR sensitivity, effectively mitigating discomfort
+for a broader demographic rather than just a specific subgroup.
+Regarding specific symptoms, significant differences were found
+in Dizziness (𝜒2 (3)= 10.05,𝑝 = .018), with AdaptiveFly (𝑀 = 0.333)
+inducing the least dizziness; post-hoc comparisons showed that
+AdaptiveFly was marginally lower than Joystick (𝑀 = 2.167,𝑝 =
+.117) and StaticFly (𝑀 = 2.750,𝑝 = .082). Furthermore, significant
+differences were observed in Blurred Vision ( 𝜒2 (3)= 11.50,𝑝 =
+.009), where StaticFly (𝑀 = 1.500) caused the most severe symp-
+toms, significantly higher than AdaptiveFly (𝑀 = −0.083,𝑝 < .05).
+Joystick StaticFly CoupledFly AdaptiveFly
+−1
+0
+1
+2
+3
+4
+5
+6
+Total Severity
+(a) Rain cloud of overall cybersickness score
+Eyestrain
+Dif
+ficulty focusing
+Blurred vision
+Dizziness
+Vertigo
+Headache
+Nausea
+ Stomach awareness
+Sweating
+−3
+ −2
+ −1
+ 0
+ 1
+ 2
+ 3
+Joystick StaticFly CoupledFly AdaptiveFly (b) Modified SSQ Radar Chart
+Figure 7: Modified SSQ results. (a) Rain cloud plot showing
+the overall score distribution. (b) Radar chart illustrating the
+symptom profile, where AdaptiveFly demonstrates reduced
+severity in Oculomotor and Disorientation components.
+5.2.2 Cognitive Load (Raw NASA-TLX). Overall cognitive load
+showed significant differences (F(3, 33)=4.93, 𝑝 = .006). Joystick
+had the highest cognitive load ( 𝑀 = 4.278), while CoupledFly
+was the lowest ( 𝑀 = 3.722). A marginally significant difference
+existed between Joystick and CoupledFly (𝑝 = .063). AdaptiveFly
+(𝑀 = 3.944) remained at a lower level.
+5.2.3 Sense of Embodiment (SoE). Among the three dimensions
+of embodiment, Self-Localization showed significant differences
+(𝜒2 (3) = 9.72,𝑝 = .021). Joystick had the lowest sense of self-
+localization (𝑀 = 4.722), significantly lower than CoupledFly (𝑀 =
+5.500,𝑝 < .05). AdaptiveFly ( 𝑀 = 5.556) achieved the highest
+score. No significant differences were found for Agency and Bodily
+Sensation across conditions.
+5.3 Qualitative Feedback
+Participant interview feedback provided valuable context for the
+quantitative results and revealed the pros and cons of different
+control modes.
+AdaptiveFly (Balance & Focus): Many participants felt Adap-
+tiveFly achieved a good balance between comfort and control. P4
+felt AdaptiveFly was "just right. " In the observation task (Task 2),
+AdaptiveFly was particularly favored (P1, P2, P10). P5 noted that
+with AdaptiveFly, they could best "immerse in observation" and
+"focus on the task itself, " whereas other modes required "figuring
+out how to control the viewpoint. " P10 considered AdaptiveFly "the
+most comfortable" and "probably the best overall. "
+CoupledFly (Speed vs. Error): CoupledFly was appreciated
+for its high responsiveness and speed, especially in tasks requiring
+quick reactions. P1 thought it "moved very smoothly, suitable for
+Task 1. " However, its high sensitivity was also a major drawback. P4
+felt it was "too sensitive. " P10 noted it was "too easy to misoperate;
+turning the head makes you dizzy easily. " This drawback was par-
+ticularly evident in the observation task Task2, with P2 explicitly
+stating that CoupledFly was "the hardest to use" in Task2.
+StaticFly (Lag & Discomfort): StaticFly was generally crit-
+icized, with many participants reporting severe discomfort and
+control difficulties (P1, P9, P11 all stated StaticFly was the dizziest).
+P3 felt "frame drops and a sense of lag, easy to lose control of direc-
+tion. " This "disconnection between body movement and will" (P5)
+was considered the primary cause of discomfort.
+Joystick (High Load & Low Immersion): As a baseline, Joy-
+stick was perceived as difficult to control with high cognitive load.
+P2 and P10 rated Joystick extremely poorly. P5 felt Joystick made
+them "focus on control rather than observation. " P12 also mentioned
+that, apart from Joystick, the other modes "were all very immersive. "
+6 Implementation to Physical Platform
+While the previous study validated AdaptiveFly within a controlled
+virtual environment, assessing the ecological validity of the system
+requires deployment on physical hardware. In this section, we de-
+scribe a proof-of-concept implementation where the control scheme
+was transposed onto a commercial Vertical Take-Off and Landing
+(VTOL) quadcopter. This deployment aimed to verify the techni-
+cal feasibility of the architecture and identify critical hardware
+requirements for embodied drone flight.
+6.1 System Integration
+We utilized a DJI Tello Ryze quadcopter as the physical platform.
+The interface architecture remained identical to the VR implemen-
+tation (see Figure 8). Regarding control mapping, the velocity com-
+mands generated by the virtual drone model were scaled down by
+a constant factor and transmitted to the physical drone via Wi-Fi;
+to ensure safety, the velocity vector magnitude was capped at 10
+cm/s. The yaw rate was mapped in a 1:1 ratio, ensuring the drone’s
+heading strictly followed the user’s head rotation. Finally, for visual
+feedback, the video stream (720p, 30 FPS) from the drone’s fixed
+AHs 2026, March 16–19, 2026, Okinawa, Japan Kong et al.
+front-facing camera was retrieved and rendered directly into the
+user’s HMD to provide first-person view (FPV) feedback.
+6.2 Field Evaluation
+We conducted a qualitative evaluation using a "Fly Through Way-
+points" (FTW) task. Users were asked to navigate the drone through
+physical hoops (diameter ≈70 cm) spaced five meters apart and
+positioned 1-2 meters above the ground (Figure 8).
+Figure 8: Real-world Deployment. (A) The DJI Tello Ryze
+drone used for physical validation. (B) The First-Person View
+(FPV) streamed to the user. (C, D) A user performing the "Fly
+Through Waypoints" task, demonstrating the transferability
+of the AdaptiveFly control interface from VR to physical
+robots.
+6.3 Observations and Challenges
+Technically, the system successfully translated body-based inputs
+into drone actuation with minimal latency. However, piloting the
+physical drone proved significantly more cognitively demanding
+than the simulation. This pilot study revealed two critical hardware
+constraints that currently hinder the full potential of embodied
+flight in real-world settings:
+The consumer-grade camera provided a low-resolution, monoc-
+ular video stream. Unlike the 3D rendered environment in VR,
+this 2D feed lacked binocular depth cues, making distance estima-
+tion challenging. Furthermore, the restricted Field of View (FOV
+≈82.6◦) meant users lost visual contact with the hoops up to 50 cm
+before traversal. This forced users to rely on optical flow estimation
+and mental trajectory extrapolation rather than continuous visual
+feedback, significantly increasing cognitive load.
+A more fundamental issue arose from the lack of a mechanical
+gimbal. In our embodied scheme, users look up (pitch up) to com-
+mand ascent. However, since the camera is fixed to the drone’s
+chassis, the visual horizon does not tilt up with the user’s head;
+it only tilts if the drone physically pitches, which is often decou-
+pled from vertical velocity in quadcopters. This created a sensory
+conflict: the user’s proprioception signaled "looking up, " but the
+visual feedback remained level. This mismatch disrupted the Sense
+of Embodiment and spatial orientation, particularly during pure
+elevation changes. Users had to actively suppress the expectation
+that the camera would follow their head pitch, requiring careful
+motion planning.
+This transposition confirms that AdaptiveFly is technically ag-
+nostic to the target platform (virtual or physical). However, the
+qualitative results strongly suggest that for embodied control to
+be effective in the real world, the drone hardware must match
+the sensory fidelity of VR. Specifically, a stereoscopic camera (for
+depth) and a synchronized 2-axis gimbal (to align camera pitch
+with head pitch) are prerequisites to resolving the sensory conflicts
+we observed.
+7 Discussion
+The primary goal of this study was to determine if a bio-congruent
+approach could resolve the tension between high performance and
+the sense of embodiment in VR locomotion. We proposed Adap-
+tiveFly, a 4-DoF embodied flight paradigm, to test this hypothesis.
+Our results achieved both high task performance and a strong self-
+localization, while significantly improving user comfort.
+Our findings highlight the inherent limitations of static map-
+pings. CoupledFly, which uses a fixed Gaze-to-Steer mapping, per-
+formed as expected in the precision task (Task 1) where looking
+and steering are naturally aligned. However, this advantage came
+at a significant cost to stability. In the observation task (Task 2),
+CoupledFly performed the worst, showing much higher gaze offset
+than all other conditions. This confirms that when a user wants to
+look around without turning, a fully coupled system creates severe
+interference.
+AdaptiveFly, by comparison, proved flexible enough to handle
+these conflicting task demands. In precision task (Task 1), it per-
+formed nearly as well as CoupledFly and significantly better than
+the Joystick. More importantly, it outperformed all baselines in the
+observation task. This features directly from our core contribution:
+Context-Adaptive Yaw control. When flying fast, the system tight-
+ens the coupling for precision; at low speeds, it loosens the control,
+allowing users to look around freely. As noted by Participant 5, this
+makes the control feel "transparent, " letting users focus on the task
+rather than the interface.
+Looking at the motion quality metrics helps explain why Adap-
+tiveFly felt better to use. A key finding was that CoupledFly resulted
+in extremely high angular velocity and jerk—often double that of
+other modes. This suggests that users were constantly fighting
+the system, making rapid corrections to counteract unintended
+steering caused by their head movements. In contrast, AdaptiveFly
+produced the smoothest motion profile with the lowest jerk. The
+AdaptiveFly: Bio-Congruent Adaptation for Embodied 3DLocomotion AHs 2026, March 16–19, 2026, Okinawa, Japan
+adaptive deadzone effectively filtered out involuntary head move-
+ments, making steering intentional and precise. We believe this
+smoothness is a major factor in reducing cybersickness. Indeed,
+AdaptiveFly yielded the lowest symptom scores, particularly for
+dizziness and blurred vision. Conversely, the poor performance
+of StaticFly (which used fixed thresholds) led to the most severe
+discomfort. Participant feedback about "lag" and "stuttering" in the
+StaticFly condition suggests that violating natural motion expecta-
+tions, even with an embodied interface can be worse than using a
+simple abstract controller.
+Our physical drone deployment (Section 6) served as a "reality
+check" for the ecological validity of our method. While the control
+logic transferred successfully from VR to the real robot, the user
+experience highlighted the critical role of sensory fidelity. We ob-
+served a "Pitch-Gaze" conflict: users would pitch their heads up to
+fly up, but the drone’s fixed camera remained level. This mismatch
+broke the sense of embodiment and increased cognitive load. This
+reinforces our argument for bio-congruence: embodied interfaces
+work best when visual feedback matches vestibular and proprio-
+ceptive expectations. Future physical implementations will need
+hardware that matches human anatomy, such as a synchronized
+gimbal.
+Despite the significant advantages demonstrated by Adaptive-
+Fly, this study has limitations. First, our sample size (𝑁 = 12) was
+relatively small; future research could validate these findings with
+a larger and more diverse sample. Second, while our physical de-
+ployment demonstrated technical feasibility, the current lack of
+stereoscopic vision and mechanical gimbals on the test drone lim-
+ited the evaluation of complex maneuvers. Future work should eval-
+uate AdaptiveFly on robotic platforms equipped with synchronized
+2-axis gimbals and stereo cameras to fully replicate the sensory
+fidelity of the VR condition. Furthermore, AdaptiveFly’s current
+adaptive mechanism is primarily based on velocity as context in-
+formation. Future work could explore integrating more biological
+signals, such as eye-tracking data, to more accurately infer user
+observation intent.
+8 Conclusion
+Traditional static mapping methods in VR locomotion often strug-
+gle to balance high performance with natural embodiment. To ad-
+dress this, we propose AdaptiveFly, which introduces bio-congruent
+adaptive mechanisms to reconcile these demands. By integrating
+Context-Adaptive Yaw and Personalized CoP calibration, the sys-
+tem dynamically adjusts control strategies based on the interaction
+context, effectively resolving the persistent ’Look vs. Steer’ conflict.
+Through a comprehensive user study, we demonstrated that
+AdaptiveFly not only maintains high performance in precision
+navigation and dynamic efficiency tasks but also significantly out-
+performs existing methods in tasks requiring independent observa-
+tion and stability. Simultaneously, AdaptiveFly provides smoother
+motion quality, enhances the user’s Self-Location, and reduces Cy-
+bersickness. Furthermore, our implementation on a commercial
+quadcopter confirms that this bio-congruent paradigm is platform-
+agnostic, capable of controlling not just virtual avatars but also
+physical robots, provided that sensory feedback aligns with user
+expectations. Our research highlights the importance of context
+adaptation in achieving transparent control and offers new direc-
+tions for the future design of embodied 3D user interfaces.
+Acknowledgments
+We gratefully acknowledge the financial support from the SECOM
+Science and Technology Foundation. We also thank Dr. Saito and
+Dr. Sakurada for the insightful discussions. We extend our deep-
+est gratitude to all user study participants, especially those who
+bravely endured severe cybersickness for the sake of science. A
+special thanks goes to the first author’s feline supervisor, providing
+emotional support during the writing process by sitting on the
+keyboard.
+References
+[1] Majed Al Zayer, Paul MacNeilage, and Eelke Folmer. 2020. Virtual Locomotion:
+A Survey. IEEE Transactions on Visualization and Computer Graphics 26, 6 (2020),
+2315–2334. doi:10.1109/TVCG.2018.2887379
+[2] Delphine Bernardin, Hideki Kadone, Daniel Bennequin, Thomas Sugar, Mohamed
+Zaoui, and Alain Berthoz. 2012. Gaze Anticipation During Human Locomotion.
+Experimental Brain Research 223, 1 (2012), 65–78. doi:10.1007/s00221-012-3241-2
+[3] Laroussi Bouguila, Béat Hirsbrunner, Makoto Sato, and Masaru Iwashita. 2003.
+Virtual Locomotion Interface with Ground Surface Simulation.. In ICAT.
+[4] D. A. Bowman, D. Koller, and L. F. Hodges. 1997. Travel in Immersive Virtual
+Environments: An Evaluation of Viewpoint Motion Control Techniques. In Pro-
+ceedings of the IEEE 1997 Annual International Symposium on Virtual Reality .
+45–52. doi:10.1109/VRAIS.1997.583043
+[5] Doug A. Bowman, Ernst Kruijff, Joseph J. LaViola Jr, and Ivan Poupyrev. 2004.
+3D User Interfaces: Theory and Practice . Addison Wesley Longman Publishing
+Co., Inc., USA. doi:10.5555/993837
+[6] Evren Bozgeyikli, Andrew Raij, Srinivas Katkoori, and Rajiv Dubey. 2016. Point
+& Teleport Locomotion Technique for Virtual Reality. InProceedings of the 2016
+Annual Symposium on Computer-Human Interaction in Play . 205–216. doi:10.
+1145/2967934.2968105
+[7] Hugo Brument, Iana Podkosova, Hannes Kaufmann, Anne Hélène Olivier, and
+Ferran Argelaguet. 2019. Virtual vs. Physical Navigation in VR: Study of Gaze
+and Body Segments Temporal Reorientation Behaviour. In Proceedings of the
+2019 IEEE Conference on Virtual Reality and 3D User Interfaces (VR) . 680–689.
+doi:10.1109/VR.2019.8797721
+[8] Maria Gallagher and Elisa Raffaella Ferrè. 2018. Cybersickness: A Multisensory
+Integration Perspective. Multisensory Research 31, 7 (2018), 645–674. doi:10.1163/
+22134808-20181293
+[9] BoYu Gao, Zijun Mai, Huawei Tu, and Henry Been-Lirn Duh. 2023. Effects
+of Transfer Functions and Body Parts on Body-Centric Locomotion in Virtual
+Reality. IEEE Transactions on Visualization and Computer Graphics 29, 8 (2023),
+3670–3684. doi:10.1109/TVCG.2022.3169222
+[10] J. E. Giphart, Y.-H. Chou, D. H. Kim, C. T. Bortnyk, and R. C. Wagenaar. 2007.
+Effects of Virtual Reality Immersion and Walking Speed on Coordination of Arm
+and Leg Movements. Presence: Teleoperators and Virtual Environments 16, 4 (2007),
+399–413. doi:10.1162/pres.16.4.399
+[11] Renato Grasso, Stefan Glasauer, Yasuhiko Takei, and Alain Berthoz. 1996. The
+Predictive Brain: Anticipatory Control of Head Direction for the Steering of
+Locomotion. NeuroReport 7, 6 (1996), 1170–1174.
+[12] Timofey Y. Grechkin, Jodie M. Plumert, and Joseph K. Kearney. 2014. Dynamic
+Affordances in Embodied Interactive Systems: The Role of Display and Mode
+of Locomotion. IEEE Transactions on Visualization and Computer Graphics 20, 4
+(2014), 596–605. doi:10.1109/TVCG.2014.18
+[13] Abraham M. Hashemian, Ashu Adhikari, Ivan A. Aguilar, Ernst Kruijff, Markus
+von der Heyde, and Bernhard E. Riecke. 2024. Leaning-Based Interfaces Improve
+Simultaneous Locomotion and Object Interaction in VR Compared to the Hand-
+held Controller. IEEE Transactions on Visualization and Computer Graphics 30, 8
+(2024), 4665–4682. doi:10.1109/TVCG.2023.3275111
+[14] Brian Horsak, Mark Simonlehner, Bernhard Dumphart, and Tarique Siragy. 2023.
+Overground Walking While Using a Virtual Reality Head Mounted Display
+Increases Variability in Trunk Kinematics and Reduces Dynamic Balance in Young
+Adults. Virtual Reality 27, 4 (2023), 3021–3032. doi:10.1007/s10055-023-00851-7
+[15] Takao Imai, Steven T. Moore, Theodore Raphan, and Bernard Cohen. 2001. In-
+teraction of the body, head, and eyes during walking and turning. Experimental
+Brain Research 136, 1 (Jan. 2001), 1–18. doi:10.1007/s002210000533
+[16] H. Iwata. 1999. The Torus Treadmill: Realizing Locomotion in VEs.IEEE Computer
+Graphics and Applications 19, 6 (1999), 30–35. doi:10.1109/38.799737
+[17] Robert J. K. Jacob. 1990. What You Look at Is What You Get: Eye Movement-Based
+Interaction Techniques. InProceedings of the SIGCHI Conference on Human Factors
+AHs 2026, March 16–19, 2026, Okinawa, Japan Kong et al.
+in Computing Systems . 11–18. doi:10.1145/97243.97246
+[18] Robert S Kennedy, Norman E Lane, Kevin S Berbaum, and Michael G Lilienthal.
+1993. Simulator sickness questionnaire: An enhanced method for quantifying
+simulator sickness. The international journal of aviation psychology 3, 3 (1993),
+203–220.
+[19] Hyun K Kim, Jaehyun Park, Yeongcheol Choi, and Mungyeong Choe. 2018. Virtual
+reality sickness questionnaire (VRSQ): Motion sickness measurement index in a
+virtual reality environment. Applied ergonomics 69 (2018), 66–73.
+[20] K. Han Kim, Matthew P. Reed, and Bernard J. Martin. 2010. A model of head
+movement contribution for gaze transitions. Ergonomics 53, 4 (4 2010), 447–457.
+doi:10.1080/00140130903483713
+[21] Sebastian Lague. 2019. Boids. https://github.com/SebLague/Boids.
+[22] Eike Langbehn, Paul Lubos, Gerd Bruder, and Frank Steinicke. 2017. Bending the
+Curve: Sensitivity to Bending of Curved Paths and Application in Room-Scale VR.
+IEEE Transactions on Visualization and Computer Graphics 23, 4 (2017), 1389–1398.
+doi:10.1109/TVCG.2017.2657220
+[23] Danielle E. Levac, Meghan E. Huber, and Dagmar Sternad. 2019. Learning and
+Transfer of Complex Motor Skills in Virtual Reality: A Perspective Review.Journal
+of NeuroEngineering and Rehabilitation 16, 1 (2019), 121. doi:10.1186/s12984-019-
+0587-8
+[24] Soroosh Mashal, Matthias Kranz, and Gerold Hoelzl. 2020. Do You Feel Like
+Flying? A Study of Flying Perception in Virtual Reality for Future Game De-
+velopment. IEEE Computer Graphics and Applications 40, 4 (2020), 51–61.
+doi:10.1109/MCG.2020.2997870
+[25] Morgan McCullough, Hong Xu, Joel Michelson, Matthew Jackoski, Wyatt Pease,
+William Cobb, William Kalescky, Joshua Ladd, and Betsy Williams. 2015. Myo
+Arm: Swinging to Explore a VE. InProceedings of the ACM SIGGRAPH Symposium
+on Applied Perception . 107–113. doi:10.1145/2804408.2804416
+[26] Thinh Nguyen-Vo, Bernhard E. Riecke, Wolfgang Stuerzlinger, Duc-Minh Pham,
+and Ernst Kruijff. 2021. NaviBoard and NaviChair: Limited Translation Com-
+bined with Full Rotation for Efficient Virtual Locomotion. IEEE Transactions on
+Visualization and Computer Graphics 27, 1 (2021), 165–177. doi:10.1109/TVCG.
+2019.2935730
+[27] Julien Pettré, Orianne Siret, Maud Marchal, Jean-Baptiste de la Rivière, and
+Anatole Lécuyer. 2011. Joyman: An Immersive and Entertaining Interface for
+Virtual Locomotion. In SIGGRAPH Asia 2011 Emerging Technologies . 1. doi:10.
+1145/2073370.2073391
+[28] Kevin Pfeil, Eugene M. Taranta, Arun Kulshreshth, Pamela Wisniewski, and
+Joseph J. LaViola Jr. 2018. A Comparison of Eye-Head Coordination Between
+Virtual and Physical Realities. InSAP ’18: Proceedings of the 15th ACM Symposium
+on Applied Perception . 1–7. doi:10.1145/3225153.3225157
+[29] Lisa Prinz, Tintu Mathew, and Benjamin Weyers. 2025. Toward More Intuitive
+VR Locomotion Techniques: How Locomotion Metaphors Shape Users’ Mental
+Models. IEEE Transactions on Visualization and Computer Graphics PP (2025),
+1–18. doi:10.1109/TVCG.2025.3630826
+[30] Jussi Rantala, Jari Kangas, Olli Koskinen, Tomi Nukarinen, and Roope Raisamo.
+2021. Comparison of Controller-Based Locomotion Techniques for Visual Obser-
+vation in Virtual Reality. Multimodal Technologies and Interaction 5, 7 (2021), 31.
+doi:10.3390/mti5070031
+[31] Craig W. Reynolds. 1998. Flocks, herds, and schools: a distributed behavioral
+model. Association for Computing Machinery, New York, NY, USA, 273–282.
+https://doi.org/10.1145/280811.281008
+[32] Sohrab Saeb, Cornelius Weber, and Jochen Triesch. 2011. Learning the optimal
+control of coordinated eye and head movements. PLoS Computational Biology 7,
+11 (Nov 2011). doi:10.1371/journal.pcbi.1002253
+[33] Ludwig Sidenmark and Hans Gellersen. 2019. Eye, Head and Torso Coordination
+During Gaze Shifts in Virtual Reality. ACM Transactions on Computer-Human
+Interaction 27 (12 2019), 1–40. doi:10.1145/3361218
+[34] Richard Stoakley, Matthew J. Conway, and Randy Pausch. 1995. Virtual Reality on
+a WIM: Interactive Worlds in Miniature. In Proceedings of the SIGCHI Conference
+on Human Factors in Computing Systems . 265–272. doi:10.1145/223904.223938
+[35] Evan A. Suma, Sabarish Babu, and Larry F. Hodges. 2007. Comparison of Travel
+Techniques in a Complex, Multi-Level 3D Environment. In 2007 IEEE Symposium
+on 3D User Interfaces . 147–153. doi:10.1109/3DUI.2007.340788
+[36] Takatoshi Yoshida, Narin Okazaki, Ken Takaki, Masaharu Hirose, Shingo Kita-
+gawa, and Masahiko Inami. 2022. Flexel: A Modular Floor Interface for Room-
+Scale Tactile Sensing. In Proceedings of the 35th Annual ACM Symposium on User
+Interface Software and Technology . 1–12. doi:10.1145/3526113.3545699
+[37] Mona Zavichi, André Santos, Catarina Moreira, Anderson Maciel, and Joaquim
+Jorge. 2025. Gaze–Hand Steering for Travel and Multitasking in Virtual Envi-
+ronments. Multimodal Technologies and Interaction 9, 6 (2025), 61. doi:10.3390/
+mti9060061
+[38] Daniel Zielasko, Yuen C. Law, and Benjamin Weyers. 2020. Take a Look Around:
+The Impact of Decoupling Gaze and Travel-Direction in Seated and Ground-
+Based Virtual Reality Utilizing Torso-Directed Steering. In 2020 IEEE Conference
+on Virtual Reality and 3D User Interfaces (VR) . 398–406. doi:10.1109/VR46266.
+2020.00060

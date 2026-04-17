@@ -1,0 +1,10 @@
+{
+  "dataset": "OfflineTraining\\ResidualBC\\data\\exp1_adaptivefly_residual_dataset.npz",
+  "train_samples": 32435,
+  "val_samples": 6462,
+  "best_epoch": 120,
+  "best_score": 0.04043071891354983,
+  "best_checkpoint": "OfflineTraining\\ResidualBC\\artifacts\\residual_bc_best.pt",
+  "final_checkpoint": "OfflineTraining\\ResidualBC\\artifacts\\residual_bc_final.pt",
+  "onnx": "OfflineTraining\\ResidualBC\\artifacts\\residual_bc.onnx"
+}

@@ -1,0 +1,60 @@
+﻿#pragma kernel CSMain
+static const int threadGroupSize = 1024;
+
+struct Boid {
+    float3 position;
+    float3 direction;
+
+    float3 flockHeading;
+    float3 flockCentre;
+    float3 separationHeading;
+    int numFlockmates;
+};
+
+RWStructuredBuffer<Boid> boids;
+int numBoids;
+float viewRadius;
+float avoidRadius;
+float separationEpsilonSqr;
+
+[numthreads(threadGroupSize,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numBoids) {
+        return;
+    }
+
+    float viewRadiusSqr = viewRadius * viewRadius;
+    float avoidRadiusSqr = avoidRadius * avoidRadius;
+    float minSqrDst = max (separationEpsilonSqr, 1e-8);
+
+    float3 flockHeading = float3 (0, 0, 0);
+    float3 flockCentre = float3 (0, 0, 0);
+    float3 separationHeading = float3 (0, 0, 0);
+    int numFlockmates = 0;
+
+    float3 positionA = boids[id.x].position;
+
+    for (int indexB = 0; indexB < numBoids; indexB ++) {
+        if (id.x != indexB) {
+            Boid boidB = boids[indexB];
+            float3 offset = boidB.position - positionA;
+            float sqrDst = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z;
+
+            if (sqrDst < viewRadiusSqr) {
+                numFlockmates += 1;
+                flockHeading += boidB.direction;
+                flockCentre += boidB.position;
+
+                if (sqrDst < avoidRadiusSqr) {
+                    separationHeading -= offset / max (sqrDst, minSqrDst);
+                }
+            }
+        }
+    }
+
+    boids[id.x].flockHeading = flockHeading;
+    boids[id.x].flockCentre = flockCentre;
+    boids[id.x].separationHeading = separationHeading;
+    boids[id.x].numFlockmates = numFlockmates;
+}

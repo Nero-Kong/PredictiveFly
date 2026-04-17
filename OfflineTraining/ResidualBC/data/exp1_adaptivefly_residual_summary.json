@@ -1,0 +1,52 @@
+{
+  "data_dir": "C:\\Users\\54402\\OneDrive\\Desktop\\AdaptiveFly\\Data\\Exp1",
+  "mode_keyword": "AdaptiveFly",
+  "files_used": [
+    "P001_AdaptiveFly_Exp1_20251115_210857.csv",
+    "P002_AdaptiveFly_Exp1_20251115_215346.csv",
+    "P003_AdaptiveFly_Exp1_20251116_111814.csv",
+    "P004_AdaptiveFly_Exp1_20251116_124843.csv",
+    "P005_AdaptiveFly_Exp1_20251116_153124.csv",
+    "P006_AdaptiveFly_Exp1_20251116_163902.csv",
+    "P007_AdaptiveFly_Exp1_20251116_193216.csv",
+    "P008_AdaptiveFly_Exp1_20251116_211137.csv",
+    "P009_AdaptiveFly_Exp1_20251116_222912.csv",
+    "P010_AdaptiveFly_Exp1_20251117_162313.csv",
+    "P011_AdaptiveFly_Exp1_20251117_181454.csv",
+    "P012_AdaptiveFly_Exp1_20251117_192737.csv"
+  ],
+  "subjects": [
+    "P001",
+    "P002",
+    "P003",
+    "P004",
+    "P005",
+    "P006",
+    "P007",
+    "P008",
+    "P009",
+    "P010",
+    "P011",
+    "P012"
+  ],
+  "train_subjects": [
+    "P001",
+    "P002",
+    "P003",
+    "P004",
+    "P005",
+    "P006",
+    "P007",
+    "P008",
+    "P009",
+    "P010"
+  ],
+  "val_subjects": [
+    "P011",
+    "P012"
+  ],
+  "train_samples": 32435,
+  "val_samples": 6462,
+  "residual_clip": 0.6,
+  "output_npz": "OfflineTraining\\ResidualBC\\data\\exp1_adaptivefly_residual_dataset.npz"
+}
