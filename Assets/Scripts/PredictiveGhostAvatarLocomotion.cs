@@ -56,6 +56,18 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Tooltip("Yaw jerk cap for prediction filtering in deg/s^3.")]
     public float maxPredictedYawJerkDeg = 720f;
 
+    [Header("Kalman Prediction")]
+    [Tooltip("Use a Kalman velocity/acceleration estimator instead of the legacy acceleration/jerk-limited prediction filter.")]
+    public bool useKalmanPrediction;
+    [Tooltip("Process noise for linear velocity prediction. Higher values react faster but trust noisy input more.")]
+    [Min(0f)] public float kalmanLinearProcessNoise = 8f;
+    [Tooltip("Measurement noise for linear velocity commands. Higher values smooth more but add lag.")]
+    [Min(0.0001f)] public float kalmanLinearMeasurementNoise = 0.18f;
+    [Tooltip("Process noise for yaw-rate prediction. Higher values react faster but trust noisy yaw input more.")]
+    [Min(0f)] public float kalmanYawProcessNoise = 600f;
+    [Tooltip("Measurement noise for yaw-rate commands. Higher values smooth more but add lag.")]
+    [Min(0.0001f)] public float kalmanYawMeasurementNoise = 36f;
+
     [Header("Catch-Up")]
     [Tooltip("Smooth time for the 1PP rig to catch up to the ghost position.")]
     public float positionSmoothTime = 0.28f;
@@ -88,6 +100,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     public HeadOffsetLocomotion.OrientationControlMode orientationMode = HeadOffsetLocomotion.OrientationControlMode.Dynamic;
     [Tooltip("Maximum vertical speed for dynamic mode (m/s).")]
     public float verticalSpeed = 10f;
+    [Tooltip("Ignore tiny vertical commands near level gaze. Prevents idle head pitch noise from activating prediction.")]
+    public float verticalCommandDeadZone = 0.05f;
     [Tooltip("Maximum yaw rate for dynamic mode (deg/s).")]
     public float yawSpeed = 180f;
     public float staticYawThresholdDeg = 30f;
@@ -121,6 +135,11 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [SerializeField] float currentYawPredictionWindow;
     [SerializeField] float currentTranslationPredictionConfidence;
     [SerializeField] float currentYawPredictionConfidence;
+    [SerializeField] Vector3 currentCenterOffsetLocal;
+    [SerializeField] Vector3 currentPredictionVelocityLocal;
+    [SerializeField] Vector3 currentGhostOffsetLocal;
+    [SerializeField] float currentHeadPitchDeg;
+    [SerializeField] float currentVerticalCommand;
 
     Vector3 centerHeadLocal;
     Vector3 smoothedPlanarVelocityLocal;
@@ -139,6 +158,10 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     Vector3 lastRawPlanarDirectionWorld;
     bool hasLastRawPlanarDirection;
     float lastRawYawRateDeg;
+    Kalman1D kalmanVelocityX;
+    Kalman1D kalmanVelocityY;
+    Kalman1D kalmanVelocityZ;
+    Kalman1D kalmanYawRateDeg;
 
     public bool IsConverged => isConverged;
     public Vector3 GhostPosition => ghostPosition;
@@ -218,6 +241,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         ghostPosition = targetRig.position;
         ghostYawDeg = targetRig.eulerAngles.y;
         hasGhostPose = true;
+        currentGhostOffsetLocal = Vector3.zero;
         SyncGhostTransform();
     }
 
@@ -257,6 +281,10 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         sustainedInputTime = 0f;
         hasLastRawPlanarDirection = false;
         lastRawYawRateDeg = 0f;
+        kalmanVelocityX.Reset();
+        kalmanVelocityY.Reset();
+        kalmanVelocityZ.Reset();
+        kalmanYawRateDeg.Reset();
         currentTranslationPredictionWindow = minTranslationPredictionWindow;
         currentYawPredictionWindow = minYawPredictionWindow;
         currentTranslationPredictionConfidence = 0f;
@@ -293,6 +321,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         Vector3 headLocalPos = targetRig.InverseTransformPoint(head.position);
         Vector3 centerOffsetLocal = headLocalPos - centerHeadLocal;
         Vector3 planarOffsetLocal = new Vector3(centerOffsetLocal.x, 0f, centerOffsetLocal.z);
+        currentCenterOffsetLocal = centerOffsetLocal;
 
         float planarSpeed = ComputePlanarSpeed(planarOffsetLocal.magnitude);
         Vector3 planarDirectionLocal = ComputePlanarDirectionLocal(planarOffsetLocal);
@@ -313,18 +342,43 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         float yawRateRad = ComputeYawRate(headForwardLocal, planarCommand);
         float rawYawRateDeg = yawRateRad * Mathf.Rad2Deg;
         float verticalCommand = ComputeVerticalSpeed(headForwardLocal);
+        if (Mathf.Abs(verticalCommand) < Mathf.Max(0f, verticalCommandDeadZone))
+        {
+            verticalCommand = 0f;
+        }
+        currentHeadPitchDeg = ComputeHeadPitchDeg(headForwardLocal);
+        currentVerticalCommand = verticalCommand;
 
         Vector3 predictionLocalVelocity = new Vector3(
             planarVelocityForPrediction.x,
             verticalCommand,
             planarVelocityForPrediction.z);
+        currentPredictionVelocityLocal = predictionLocalVelocity;
 
         Vector3 rawWorldPredictionVelocity = targetRig.TransformDirection(predictionLocalVelocity);
         bool hasInput = predictionLocalVelocity.sqrMagnitude > 1e-4f || Mathf.Abs(rawYawRateDeg) > 0.5f;
 
         UpdateAdaptivePredictionWindows(rawWorldPredictionVelocity, rawYawRateDeg, hasInput, dt);
-        Vector3 filteredWorldPredictionVelocity = UpdateFilteredPredictionVelocity(rawWorldPredictionVelocity, hasInput, dt);
-        float filteredYawPredictionRateDeg = UpdateFilteredPredictionYawRate(rawYawRateDeg, hasInput, dt);
+        Vector3 filteredWorldPredictionVelocity;
+        float filteredYawPredictionRateDeg;
+        if (useKalmanPrediction)
+        {
+            filteredWorldPredictionVelocity = UpdateKalmanPredictionVelocity(
+                rawWorldPredictionVelocity,
+                hasInput,
+                currentTranslationPredictionWindow,
+                dt);
+            filteredYawPredictionRateDeg = UpdateKalmanPredictionYawRate(
+                rawYawRateDeg,
+                hasInput,
+                currentYawPredictionWindow,
+                dt);
+        }
+        else
+        {
+            filteredWorldPredictionVelocity = UpdateFilteredPredictionVelocity(rawWorldPredictionVelocity, hasInput, dt);
+            filteredYawPredictionRateDeg = UpdateFilteredPredictionYawRate(rawYawRateDeg, hasInput, dt);
+        }
 
         return new LocomotionCommand
         {
@@ -477,6 +531,50 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         return filteredPredictionYawRateDeg;
     }
 
+    Vector3 UpdateKalmanPredictionVelocity(Vector3 rawWorldVelocity, bool hasInput, float predictionWindow, float dt)
+    {
+        Vector3 measurement = hasInput ? rawWorldVelocity : Vector3.zero;
+        float processNoise = Mathf.Max(0f, kalmanLinearProcessNoise);
+        float measurementNoise = Mathf.Max(0.0001f, kalmanLinearMeasurementNoise);
+
+        kalmanVelocityX.Step(measurement.x, dt, processNoise, measurementNoise);
+        kalmanVelocityY.Step(measurement.y, dt, processNoise, measurementNoise);
+        kalmanVelocityZ.Step(measurement.z, dt, processNoise, measurementNoise);
+
+        filteredPredictionVelocityWorld = new Vector3(
+            kalmanVelocityX.Value,
+            kalmanVelocityY.Value,
+            kalmanVelocityZ.Value);
+        filteredPredictionAccelerationWorld = new Vector3(
+            kalmanVelocityX.Derivative,
+            kalmanVelocityY.Derivative,
+            kalmanVelocityZ.Derivative);
+
+        float horizon = Mathf.Max(0f, predictionWindow);
+        float accelerationLimit = Mathf.Max(0f, maxPredictedLinearAcceleration);
+        return new Vector3(
+            kalmanVelocityX.AverageValueOverHorizon(horizon, accelerationLimit),
+            kalmanVelocityY.AverageValueOverHorizon(horizon, accelerationLimit),
+            kalmanVelocityZ.AverageValueOverHorizon(horizon, accelerationLimit));
+    }
+
+    float UpdateKalmanPredictionYawRate(float rawYawRateDeg, bool hasInput, float predictionWindow, float dt)
+    {
+        float measurement = hasInput ? rawYawRateDeg : 0f;
+        kalmanYawRateDeg.Step(
+            measurement,
+            dt,
+            Mathf.Max(0f, kalmanYawProcessNoise),
+            Mathf.Max(0.0001f, kalmanYawMeasurementNoise));
+
+        filteredPredictionYawRateDeg = kalmanYawRateDeg.Value;
+        filteredPredictionYawAccelerationDeg = kalmanYawRateDeg.Derivative;
+
+        return kalmanYawRateDeg.AverageValueOverHorizon(
+            Mathf.Max(0f, predictionWindow),
+            Mathf.Max(0f, maxPredictedYawAccelerationDeg));
+    }
+
     void UpdateGhostPose(LocomotionCommand command, float dt)
     {
         if (!hasGhostPose)
@@ -486,6 +584,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         if (!command.hasInput)
         {
+            currentGhostOffsetLocal = targetRig.InverseTransformDirection(ghostPosition - targetRig.position);
             SyncGhostTransform();
             return;
         }
@@ -517,6 +616,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             ghostYawDeg = Mathf.LerpAngle(ghostYawDeg, predictedYaw, yawT);
         }
 
+        currentGhostOffsetLocal = targetRig.InverseTransformDirection(ghostPosition - targetRig.position);
         SyncGhostTransform();
     }
 
@@ -668,8 +768,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
     float ComputeVerticalSpeed(Vector3 headForwardLocal)
     {
-        float planarNorm = Mathf.Sqrt(headForwardLocal.x * headForwardLocal.x + headForwardLocal.z * headForwardLocal.z);
-        float headPitchDeg = Mathf.Atan2(headForwardLocal.y, planarNorm) * Mathf.Rad2Deg;
+        float headPitchDeg = ComputeHeadPitchDeg(headForwardLocal);
 
         switch (orientationMode)
         {
@@ -764,5 +863,94 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         public float translationPredictionWindow;
         public float yawPredictionWindow;
         public bool hasInput;
+    }
+
+    struct Kalman1D
+    {
+        bool initialized;
+        float value;
+        float derivative;
+        float p00;
+        float p01;
+        float p10;
+        float p11;
+
+        public float Value => value;
+        public float Derivative => derivative;
+
+        public void Reset()
+        {
+            initialized = false;
+            value = 0f;
+            derivative = 0f;
+            p00 = 1f;
+            p01 = 0f;
+            p10 = 0f;
+            p11 = 1f;
+        }
+
+        public void Step(float measurement, float dt, float processNoise, float measurementNoise)
+        {
+            float safeDt = Mathf.Max(dt, 1e-4f);
+            if (!initialized)
+            {
+                initialized = true;
+                value = measurement;
+                derivative = 0f;
+                p00 = measurementNoise;
+                p01 = 0f;
+                p10 = 0f;
+                p11 = Mathf.Max(1f, processNoise);
+                return;
+            }
+
+            value += derivative * safeDt;
+
+            float dt2 = safeDt * safeDt;
+            float dt3 = dt2 * safeDt;
+            float q = Mathf.Max(0f, processNoise);
+            float q00 = q * dt3 / 3f;
+            float q01 = q * dt2 / 2f;
+            float q11 = q * safeDt;
+
+            float predictedP00 = p00 + safeDt * (p10 + p01) + dt2 * p11 + q00;
+            float predictedP01 = p01 + safeDt * p11 + q01;
+            float predictedP10 = p10 + safeDt * p11 + q01;
+            float predictedP11 = p11 + q11;
+
+            float innovation = measurement - value;
+            float innovationVariance = predictedP00 + Mathf.Max(0.0001f, measurementNoise);
+            float k0 = predictedP00 / innovationVariance;
+            float k1 = predictedP10 / innovationVariance;
+
+            value += k0 * innovation;
+            derivative += k1 * innovation;
+
+            p00 = (1f - k0) * predictedP00;
+            p01 = (1f - k0) * predictedP01;
+            p10 = predictedP10 - k1 * predictedP00;
+            p11 = predictedP11 - k1 * predictedP01;
+
+            float symmetricOffDiagonal = 0.5f * (p01 + p10);
+            p01 = symmetricOffDiagonal;
+            p10 = symmetricOffDiagonal;
+            p00 = Mathf.Max(p00, 1e-6f);
+            p11 = Mathf.Max(p11, 1e-6f);
+        }
+
+        public float AverageValueOverHorizon(float horizon, float derivativeLimit)
+        {
+            float safeHorizon = Mathf.Max(0f, horizon);
+            float safeDerivative = derivativeLimit > 0f
+                ? Mathf.Clamp(derivative, -derivativeLimit, derivativeLimit)
+                : derivative;
+            return value + 0.5f * safeDerivative * safeHorizon;
+        }
+    }
+
+    static float ComputeHeadPitchDeg(Vector3 headForwardLocal)
+    {
+        float planarNorm = Mathf.Sqrt(headForwardLocal.x * headForwardLocal.x + headForwardLocal.z * headForwardLocal.z);
+        return Mathf.Atan2(headForwardLocal.y, planarNorm) * Mathf.Rad2Deg;
     }
 }

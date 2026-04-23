@@ -242,6 +242,7 @@ GameObject:
   - component: {fileID: 51859309}
   - component: {fileID: 51859314}
   - component: {fileID: 51859315}
+  - component: {fileID: 51859316}
   m_Layer: 0
   m_Name: Camera
   m_TagString: MainCamera
@@ -434,6 +435,26 @@ Rigidbody:
   m_Interpolate: 0
   m_Constraints: 0
   m_CollisionDetection: 0
+--- !u!114 &51859316
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 51859307}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f1b9c70e2cc64e5eb7034eb8f8ff9c2d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  targetCamera: {fileID: 51859312}
+  visibleOnStart: 1
+  toggleKey: 109
+  markerLocalPosition: {x: 0, y: 0, z: 2}
+  markerSize: 0.08
+  markerThickness: 0.01
+  markerColor: {r: 0, g: 1, b: 0.2, a: 1}
+  isVisible: 1
 --- !u!1 &52050377
 GameObject:
   m_ObjectHideFlags: 0
@@ -446,8 +467,9 @@ GameObject:
   - component: {fileID: 52050380}
   - component: {fileID: 52050379}
   - component: {fileID: 52050378}
+  - component: {fileID: 52050382}
   m_Layer: 0
-  m_Name: Capsule
+  m_Name: PredictiveGhostAvatar
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -470,7 +492,7 @@ CapsuleCollider:
   m_LayerOverridePriority: 0
   m_IsTrigger: 0
   m_ProvidesContacts: 0
-  m_Enabled: 1
+  m_Enabled: 0
   serializedVersion: 2
   m_Radius: 0.5
   m_Height: 2
@@ -483,7 +505,7 @@ MeshRenderer:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 52050377}
-  m_Enabled: 1
+  m_Enabled: 0
   m_CastShadows: 1
   m_ReceiveShadows: 1
   m_DynamicOccludee: 1
@@ -544,6 +566,57 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &52050382
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 52050377}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d4fa8be95b9d4fc58f1db407d86ac117, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  locomotion: {fileID: 132756610}
+  autoFindLocomotion: 1
+  animator: {fileID: 0}
+  animatorController: {fileID: 0}
+  visualPrefab: {fileID: 7018556255205192675, guid: d72fb8f83c2ff3f43985a16eab0272f3, type: 3}
+  buildProceduralVisual: 0
+  hideExistingRenderersOnStart: 1
+  disableExistingCollidersOnStart: 1
+  disablePrefabControlScripts: 1
+  disablePrefabColliders: 1
+  disablePrefabCamerasAndLights: 1
+  applyGhostMaterialToPrefab: 1
+  applyRootLeanToPrefab: 0
+  ghostColor: {r: 0.18, g: 0.8, b: 1, a: 0.38}
+  visualScale: 0.8
+  visualLocalPosition: {x: 0, y: 1.36, z: 0}
+  visualLocalEulerAngles: {x: 0, y: 0, z: 0}
+  visualLocalScale: {x: 1, y: 1, z: 1}
+  visualAlphaPulse: 0.08
+  visualAlphaPulseFrequency: 1.4
+  activeSpeedReference: 2.5
+  verticalSpeedReference: 1.5
+  parameterSmoothing: 10
+  idleBobAmplitude: 0.06
+  idleBobFrequency: 1.8
+  flyLeanAngleDeg: 28
+  floatBoolParameter: Float
+  sprintBoolParameter: Sprint
+  ascendBoolParameter: Ascend
+  descendBoolParameter: Descend
+  flyXFloatParameter: FlyX
+  flyZFloatParameter: FlyZ
+  speedFloatParameter: Speed
+  localVelocity: {x: 0, y: 0, z: 0}
+  smoothedFlyX: 0
+  smoothedFlyZ: 0
+  smoothedSpeed01: 0
+  isAscending: 0
+  isDescending: 0
 --- !u!1001 &58224648
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -1157,9 +1230,25 @@ MonoBehaviour:
   snapGhostToPrediction: 1
   ghostPositionResponse: 30
   ghostYawResponse: 30
-  predictionWindow: 0.5
+  minTranslationPredictionWindow: 0.08
+  maxTranslationPredictionWindow: 0.45
+  minYawPredictionWindow: 0.05
+  maxYawPredictionWindow: 0.2
   maxPredictionDistance: 3
   useSmoothedPlanarVelocityForPrediction: 0
+  predictionRampTime: 0.3
+  predictionDirectionStabilityAngleDeg: 55
+  fullPredictionAtSpeedFraction: 0.45
+  predictionWindowResponse: 10
+  maxPredictedLinearAcceleration: 12
+  maxPredictedLinearJerk: 48
+  maxPredictedYawAccelerationDeg: 220
+  maxPredictedYawJerkDeg: 720
+  useKalmanPrediction: 0
+  kalmanLinearProcessNoise: 8
+  kalmanLinearMeasurementNoise: 0.18
+  kalmanYawProcessNoise: 600
+  kalmanYawMeasurementNoise: 36
   positionSmoothTime: 0.28
   maxCatchUpSpeed: 4
   yawSmoothTime: 0.22
@@ -1167,13 +1256,14 @@ MonoBehaviour:
   convergenceDistance: 0.05
   convergenceYawThresholdDeg: 3
   horizontalSpeed: 5
-  planarDeadZone: 0.02
+  planarDeadZone: 0.06
   planarMaxOffset: 0.14
   planarResponseExponent: 1.2
   headDirectionBlend: 0.2
   planarSmoothing: 10
   orientationMode: 0
   verticalSpeed: 10
+  verticalCommandDeadZone: 0.05
   yawSpeed: 180
   staticYawThresholdDeg: 30
   staticYawSpeedDeg: 60
@@ -1199,6 +1289,10 @@ MonoBehaviour:
   ghostPosition: {x: 0, y: 0, z: 0}
   ghostYawDeg: 0
   distanceToGhost: 0
+  currentTranslationPredictionWindow: 0
+  currentYawPredictionWindow: 0
+  currentTranslationPredictionConfidence: 0
+  currentYawPredictionConfidence: 0
 --- !u!1 &244527049
 GameObject:
   m_ObjectHideFlags: 0
@@ -1404,7 +1498,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 245877247}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 05746d840e470ca448fed30fa2d77649, type: 3}
   m_Name: 
@@ -1431,7 +1525,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 245877247}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 5866de9ab7c3ac74e86b4befc6cd827e, type: 3}
   m_Name: 
