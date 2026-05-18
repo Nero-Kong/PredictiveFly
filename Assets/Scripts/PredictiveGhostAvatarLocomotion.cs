@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Events;
+using UnityEngine.Rendering;
 
 /// <summary>
 /// Predictive third-person separation locomotion built on the same head-offset
@@ -10,6 +11,12 @@ using UnityEngine.Events;
 [DisallowMultipleComponent]
 public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 {
+    public enum PredictionMethod
+    {
+        AccelerationJerkLimited,
+        KalmanVelocityEstimator
+    }
+
     [Header("Rig / HMD")]
     [Tooltip("Locomotion root that should be pulled toward the ghost. Defaults to this object.")]
     public Transform targetRig;
@@ -19,14 +26,20 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Header("Ghost Avatar")]
     [Tooltip("Optional ghost avatar transform. Leave empty to run the logic without a visible mesh.")]
     public Transform ghostAvatar;
-    [Tooltip("If true, the ghost snaps to the predicted pose each frame.")]
-    public bool snapGhostToPrediction = true;
+    [Tooltip("If true, the ghost snaps to the predicted pose each frame. Disable for a calmer visual preview.")]
+    public bool snapGhostToPrediction;
     [Tooltip("Ghost position response when snap is disabled. Higher = more immediate.")]
-    public float ghostPositionResponse = 30f;
+    public float ghostPositionResponse = 18f;
     [Tooltip("Ghost yaw response when snap is disabled. Higher = more immediate.")]
-    public float ghostYawResponse = 30f;
+    public float ghostYawResponse = 18f;
 
     [Header("Prediction")]
+    [Tooltip("Prediction estimator used for the future ghost. This can be changed live in Play Mode.")]
+    public PredictionMethod predictionMethod = PredictionMethod.AccelerationJerkLimited;
+    [Tooltip("Press this key in Play Mode to cycle prediction methods. Set to None to disable.")]
+    public KeyCode switchPredictionMethodKey = KeyCode.P;
+    [Tooltip("Reset estimator history when changing prediction method to avoid stale velocity state carrying across methods.")]
+    public bool resetEstimatorOnMethodSwitch = true;
     [Tooltip("Minimum forward lookahead for translation when input has just started or is unstable.")]
     public float minTranslationPredictionWindow = 0.08f;
     [Tooltip("Maximum forward lookahead for translation once input is stable.")]
@@ -57,7 +70,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     public float maxPredictedYawJerkDeg = 720f;
 
     [Header("Kalman Prediction")]
-    [Tooltip("Use a Kalman velocity/acceleration estimator instead of the legacy acceleration/jerk-limited prediction filter.")]
+    [HideInInspector]
+    [Tooltip("Legacy serialized toggle. Prefer Prediction Method.")]
     public bool useKalmanPrediction;
     [Tooltip("Process noise for linear velocity prediction. Higher values react faster but trust noisy input more.")]
     [Min(0f)] public float kalmanLinearProcessNoise = 8f;
@@ -81,6 +95,47 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     public float convergenceDistance = 0.05f;
     [Tooltip("Yaw threshold for convergence in degrees.")]
     public float convergenceYawThresholdDeg = 3f;
+
+    [Header("Prediction Path Preview")]
+    [Tooltip("Draw a direct future-intent path from the user's current body position to the predicted ghost.")]
+    public bool showPredictionPath;
+    [Tooltip("Hide the path once the rig has nearly caught up to the ghost.")]
+    public bool hidePathWhenConverged = true;
+    [Tooltip("Do not show the path for tiny ghost separations.")]
+    public float predictionPathMinDistance = 0.12f;
+    [Tooltip("Height offset for the floating path. Match the ghost/drone visual center.")]
+    public float predictionPathHeightOffset = 1.15f;
+    [Tooltip("Small upward arc added to the middle of the path.")]
+    public float predictionPathArcHeight = 0.08f;
+    [Tooltip("Number of points used to render the curved path.")]
+    [Min(2)] public int predictionPathSegmentCount = 12;
+    [Tooltip("Width of the path preview line.")]
+    public float predictionPathWidth = 0.035f;
+    public Color predictionPathStartColor = new Color(0.18f, 0.8f, 1f, 0.04f);
+    public Color predictionPathEndColor = new Color(0.18f, 0.8f, 1f, 0.34f);
+
+    [Header("Ghost Motion Trail")]
+    [Tooltip("Draw a short secondary fading trail behind the future ghost. The prediction path above is the main interpretive cue.")]
+    public bool showPredictionTrail;
+    [Tooltip("Stop emitting the trail once the rig has nearly caught up to the ghost.")]
+    public bool hideTrailWhenConverged = true;
+    [Tooltip("Do not emit the trail for tiny ghost separations.")]
+    public float minTrailDistance = 0.12f;
+    [Tooltip("Height offset used by the fading motion trail. Match the ghost/drone visual center rather than the floor-level rig root.")]
+    public float motionTrailHeightOffset = 1.15f;
+    [Tooltip("How long the fading motion trail remains visible in seconds.")]
+    public float motionTrailTime = 0.35f;
+    [Tooltip("Minimum distance between trail vertices. Lower values produce smoother trails but more geometry.")]
+    public float motionTrailMinVertexDistance = 0.035f;
+    [Tooltip("Trail width near the current ghost position.")]
+    public float motionTrailHeadWidth = 0.05f;
+    [Tooltip("Trail width at the fading tail.")]
+    public float motionTrailTailWidth = 0.004f;
+    public Color motionTrailTailColor = new Color(0.18f, 0.8f, 1f, 0f);
+    public Color motionTrailHeadColor = new Color(0.18f, 0.8f, 1f, 0.14f);
+    [Tooltip("Clear the ghost trail when the predicted direction changes sharply.")]
+    public bool clearMotionTrailOnDirectionChange = true;
+    public float motionTrailClearAngleDeg = 45f;
 
     [Header("Planar Translation")]
     [Tooltip("Maximum planar speed in m/s.")]
@@ -130,6 +185,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [SerializeField] bool hasActiveInput;
     [SerializeField] Vector3 ghostPosition;
     [SerializeField] float ghostYawDeg;
+    [SerializeField] Vector3 visualGhostPosition;
+    [SerializeField] float visualGhostYawDeg;
     [SerializeField] float distanceToGhost;
     [SerializeField] float currentTranslationPredictionWindow;
     [SerializeField] float currentYawPredictionWindow;
@@ -140,6 +197,9 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [SerializeField] Vector3 currentGhostOffsetLocal;
     [SerializeField] float currentHeadPitchDeg;
     [SerializeField] float currentVerticalCommand;
+    [SerializeField] PredictionMethod activePredictionMethod;
+    [SerializeField] bool predictionPathVisible;
+    [SerializeField] bool motionTrailEmitting;
 
     Vector3 centerHeadLocal;
     Vector3 smoothedPlanarVelocityLocal;
@@ -153,6 +213,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     Quaternion initialTargetRotation = Quaternion.identity;
     bool hasInitialTargetPose;
     bool hasGhostPose;
+    bool hasVisualGhostPose;
     bool warnedSetup;
     float sustainedInputTime;
     Vector3 lastRawPlanarDirectionWorld;
@@ -162,10 +223,20 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     Kalman1D kalmanVelocityY;
     Kalman1D kalmanVelocityZ;
     Kalman1D kalmanYawRateDeg;
+    PredictionMethod lastPredictionMethod;
+    Transform predictionPathRoot;
+    LineRenderer predictionPathLine;
+    Material predictionPathMaterial;
+    Transform motionTrailRoot;
+    TrailRenderer motionTrail;
+    Material motionTrailMaterial;
+    Gradient motionTrailGradient;
+    Vector3 lastMotionTrailDirectionWorld;
+    bool hasLastMotionTrailDirection;
 
     public bool IsConverged => isConverged;
-    public Vector3 GhostPosition => ghostPosition;
-    public Quaternion GhostRotation => Quaternion.Euler(0f, ghostYawDeg, 0f);
+    public Vector3 GhostPosition => visualGhostPosition;
+    public Quaternion GhostRotation => Quaternion.Euler(0f, visualGhostYawDeg, 0f);
 
     void Awake()
     {
@@ -180,14 +251,31 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         }
     }
 
+    void OnValidate()
+    {
+        activePredictionMethod = predictionMethod;
+    }
+
     void OnEnable()
     {
+        MigrateLegacyPredictionToggle();
+        lastPredictionMethod = predictionMethod;
+        SyncPredictionMethodDebugState();
         WarnAboutConflicts();
         CacheInitialTargetPose();
         CaptureCenter();
         ResetMotionState();
         SnapGhostToRig();
         UpdateConvergenceState(forceNotify: false);
+        if (showPredictionPath)
+        {
+            EnsurePredictionPathVisual();
+        }
+
+        if (showPredictionTrail)
+        {
+            EnsurePredictionMotionTrailVisual();
+        }
     }
 
     void Update()
@@ -202,6 +290,9 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             RecenterNow();
         }
 
+        HandlePredictionMethodSwitchInput();
+        ApplyPredictionMethodIfChanged();
+
         float dt = Time.deltaTime;
         if (dt <= 0f)
         {
@@ -214,6 +305,40 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         UpdateGhostPose(command, dt);
         FollowGhost(dt);
         UpdateConvergenceState(forceNotify: false);
+        UpdatePredictionVisualCues(command);
+    }
+
+    void OnDisable()
+    {
+        HidePredictionPathPreview();
+        HidePredictionMotionTrail(clearTrail: true);
+    }
+
+    void OnDestroy()
+    {
+        if (predictionPathMaterial != null)
+        {
+            Destroy(predictionPathMaterial);
+            predictionPathMaterial = null;
+        }
+
+        if (predictionPathRoot != null)
+        {
+            Destroy(predictionPathRoot.gameObject);
+            predictionPathRoot = null;
+        }
+
+        if (motionTrailMaterial != null)
+        {
+            Destroy(motionTrailMaterial);
+            motionTrailMaterial = null;
+        }
+
+        if (motionTrailRoot != null)
+        {
+            Destroy(motionTrailRoot.gameObject);
+            motionTrailRoot = null;
+        }
     }
 
     [ContextMenu("Recenter Now")]
@@ -228,6 +353,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         CaptureCenter();
         SnapGhostToRig();
         UpdateConvergenceState(forceNotify: false);
+        HidePredictionPathPreview();
+        HidePredictionMotionTrail(clearTrail: true);
     }
 
     [ContextMenu("Snap Ghost To Rig")]
@@ -240,9 +367,37 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         ghostPosition = targetRig.position;
         ghostYawDeg = targetRig.eulerAngles.y;
+        visualGhostPosition = ghostPosition;
+        visualGhostYawDeg = ghostYawDeg;
         hasGhostPose = true;
+        hasVisualGhostPose = true;
         currentGhostOffsetLocal = Vector3.zero;
         SyncGhostTransform();
+        HidePredictionPathPreview();
+        HidePredictionMotionTrail(clearTrail: true);
+    }
+
+    [ContextMenu("Cycle Prediction Method")]
+    public void CyclePredictionMethod()
+    {
+        predictionMethod = predictionMethod == PredictionMethod.AccelerationJerkLimited
+            ? PredictionMethod.KalmanVelocityEstimator
+            : PredictionMethod.AccelerationJerkLimited;
+
+        ApplyPredictionMethodIfChanged(force: true);
+    }
+
+    public void SetPredictionMethod(PredictionMethod method)
+    {
+        predictionMethod = method;
+        ApplyPredictionMethodIfChanged(force: true);
+    }
+
+    public void SetUseKalmanPrediction(bool enabled)
+    {
+        SetPredictionMethod(enabled
+            ? PredictionMethod.KalmanVelocityEstimator
+            : PredictionMethod.AccelerationJerkLimited);
     }
 
     void CacheInitialTargetPose()
@@ -274,6 +429,13 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         smoothedPlanarVelocityLocal = Vector3.zero;
         rigPositionVelocity = Vector3.zero;
         rigYawVelocity = 0f;
+        hasLastMotionTrailDirection = false;
+        hasVisualGhostPose = false;
+        ResetPredictionEstimatorState();
+    }
+
+    void ResetPredictionEstimatorState()
+    {
         filteredPredictionVelocityWorld = Vector3.zero;
         filteredPredictionAccelerationWorld = Vector3.zero;
         filteredPredictionYawRateDeg = 0f;
@@ -289,6 +451,52 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         currentYawPredictionWindow = minYawPredictionWindow;
         currentTranslationPredictionConfidence = 0f;
         currentYawPredictionConfidence = 0f;
+    }
+
+    void HandlePredictionMethodSwitchInput()
+    {
+        if (switchPredictionMethodKey == KeyCode.None)
+        {
+            return;
+        }
+
+        if (Input.GetKeyDown(switchPredictionMethodKey))
+        {
+            CyclePredictionMethod();
+        }
+    }
+
+    void ApplyPredictionMethodIfChanged(bool force = false)
+    {
+        if (!force && predictionMethod == lastPredictionMethod)
+        {
+            SyncPredictionMethodDebugState();
+            return;
+        }
+
+        if (resetEstimatorOnMethodSwitch)
+        {
+            ResetPredictionEstimatorState();
+        }
+
+        lastPredictionMethod = predictionMethod;
+        SyncPredictionMethodDebugState();
+
+        Debug.Log($"[PredictiveGhostAvatarLocomotion] Prediction method switched to {predictionMethod}.", this);
+    }
+
+    void SyncPredictionMethodDebugState()
+    {
+        activePredictionMethod = predictionMethod;
+        useKalmanPrediction = predictionMethod == PredictionMethod.KalmanVelocityEstimator;
+    }
+
+    void MigrateLegacyPredictionToggle()
+    {
+        if (useKalmanPrediction && predictionMethod == PredictionMethod.AccelerationJerkLimited)
+        {
+            predictionMethod = PredictionMethod.KalmanVelocityEstimator;
+        }
     }
 
     void WarnAboutConflicts()
@@ -361,7 +569,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         UpdateAdaptivePredictionWindows(rawWorldPredictionVelocity, rawYawRateDeg, hasInput, dt);
         Vector3 filteredWorldPredictionVelocity;
         float filteredYawPredictionRateDeg;
-        if (useKalmanPrediction)
+        if (predictionMethod == PredictionMethod.KalmanVelocityEstimator)
         {
             filteredWorldPredictionVelocity = UpdateKalmanPredictionVelocity(
                 rawWorldPredictionVelocity,
@@ -584,6 +792,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         if (!command.hasInput)
         {
+            UpdateVisualGhostPose(dt);
             currentGhostOffsetLocal = targetRig.InverseTransformDirection(ghostPosition - targetRig.position);
             SyncGhostTransform();
             return;
@@ -603,21 +812,28 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         float predictedYaw = targetRig.eulerAngles.y
             + command.predictionYawRateDeg * Mathf.Max(0f, command.yawPredictionWindow);
 
-        if (snapGhostToPrediction)
-        {
-            ghostPosition = predictedPosition;
-            ghostYawDeg = predictedYaw;
-        }
-        else
-        {
-            float posT = 1f - Mathf.Exp(-Mathf.Max(0f, ghostPositionResponse) * dt);
-            float yawT = 1f - Mathf.Exp(-Mathf.Max(0f, ghostYawResponse) * dt);
-            ghostPosition = Vector3.Lerp(ghostPosition, predictedPosition, posT);
-            ghostYawDeg = Mathf.LerpAngle(ghostYawDeg, predictedYaw, yawT);
-        }
+        ghostPosition = predictedPosition;
+        ghostYawDeg = predictedYaw;
+        UpdateVisualGhostPose(dt);
 
         currentGhostOffsetLocal = targetRig.InverseTransformDirection(ghostPosition - targetRig.position);
         SyncGhostTransform();
+    }
+
+    void UpdateVisualGhostPose(float dt)
+    {
+        if (!hasVisualGhostPose || snapGhostToPrediction || dt <= 0f)
+        {
+            visualGhostPosition = ghostPosition;
+            visualGhostYawDeg = ghostYawDeg;
+            hasVisualGhostPose = true;
+            return;
+        }
+
+        float posT = 1f - Mathf.Exp(-Mathf.Max(0f, ghostPositionResponse) * dt);
+        float yawT = 1f - Mathf.Exp(-Mathf.Max(0f, ghostYawResponse) * dt);
+        visualGhostPosition = Vector3.Lerp(visualGhostPosition, ghostPosition, posT);
+        visualGhostYawDeg = Mathf.LerpAngle(visualGhostYawDeg, ghostYawDeg, yawT);
     }
 
     void FollowGhost(float dt)
@@ -651,8 +867,341 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         }
 
         ghostAvatar.SetPositionAndRotation(
-            ghostPosition,
-            Quaternion.Euler(0f, ghostYawDeg, 0f));
+            visualGhostPosition,
+            Quaternion.Euler(0f, visualGhostYawDeg, 0f));
+    }
+
+    void UpdatePredictionVisualCues(LocomotionCommand command)
+    {
+        UpdatePredictionPathPreview();
+        UpdatePredictionMotionTrail(command);
+    }
+
+    void UpdatePredictionPathPreview()
+    {
+        if (!showPredictionPath || targetRig == null || !hasGhostPose)
+        {
+            HidePredictionPathPreview();
+            return;
+        }
+
+        float distance = Vector3.Distance(targetRig.position, visualGhostPosition);
+        bool canShow = distance >= Mathf.Max(0f, predictionPathMinDistance)
+            && (!hidePathWhenConverged || !isConverged);
+        if (!canShow)
+        {
+            HidePredictionPathPreview();
+            return;
+        }
+
+        EnsurePredictionPathVisual();
+        if (predictionPathRoot == null || predictionPathLine == null)
+        {
+            return;
+        }
+
+        predictionPathRoot.gameObject.SetActive(true);
+        predictionPathLine.enabled = true;
+        predictionPathVisible = true;
+
+        int pointCount = Mathf.Max(2, predictionPathSegmentCount);
+        if (predictionPathLine.positionCount != pointCount)
+        {
+            predictionPathLine.positionCount = pointCount;
+        }
+
+        predictionPathLine.startWidth = Mathf.Max(0.001f, predictionPathWidth);
+        predictionPathLine.endWidth = Mathf.Max(0.001f, predictionPathWidth * 0.65f);
+        predictionPathLine.startColor = predictionPathStartColor;
+        predictionPathLine.endColor = predictionPathEndColor;
+
+        Vector3 start = targetRig.position + Vector3.up * predictionPathHeightOffset;
+        Vector3 end = visualGhostPosition + Vector3.up * predictionPathHeightOffset;
+        Vector3 control = (start + end) * 0.5f + Vector3.up * Mathf.Max(0f, predictionPathArcHeight);
+
+        for (int i = 0; i < pointCount; i++)
+        {
+            float t = pointCount == 1 ? 1f : i / (float)(pointCount - 1);
+            predictionPathLine.SetPosition(i, QuadraticBezier(start, control, end, t));
+        }
+    }
+
+    void EnsurePredictionPathVisual()
+    {
+        if (predictionPathRoot != null && predictionPathLine != null)
+        {
+            return;
+        }
+
+        DestroyPredictionPathVisual();
+
+        GameObject root = new GameObject("__PredictionPathPreview");
+        root.transform.SetParent(transform, false);
+        predictionPathRoot = root.transform;
+
+        predictionPathMaterial = CreateTransparentTrailMaterial("__PredictionPathPreviewMat");
+        predictionPathLine = root.AddComponent<LineRenderer>();
+        predictionPathLine.useWorldSpace = true;
+        predictionPathLine.alignment = LineAlignment.View;
+        predictionPathLine.textureMode = LineTextureMode.Stretch;
+        predictionPathLine.numCapVertices = 4;
+        predictionPathLine.numCornerVertices = 4;
+        predictionPathLine.shadowCastingMode = ShadowCastingMode.Off;
+        predictionPathLine.receiveShadows = false;
+        predictionPathLine.material = predictionPathMaterial;
+        predictionPathLine.enabled = false;
+        root.SetActive(false);
+    }
+
+    void HidePredictionPathPreview()
+    {
+        if (predictionPathLine != null)
+        {
+            predictionPathLine.enabled = false;
+        }
+
+        if (predictionPathRoot != null)
+        {
+            predictionPathRoot.gameObject.SetActive(false);
+        }
+
+        predictionPathVisible = false;
+    }
+
+    void DestroyPredictionPathVisual()
+    {
+        if (predictionPathRoot != null)
+        {
+            Destroy(predictionPathRoot.gameObject);
+            predictionPathRoot = null;
+        }
+
+        if (predictionPathMaterial != null)
+        {
+            Destroy(predictionPathMaterial);
+            predictionPathMaterial = null;
+        }
+
+        predictionPathLine = null;
+    }
+
+    void UpdatePredictionMotionTrail(LocomotionCommand command)
+    {
+        if (!showPredictionTrail || targetRig == null || !hasGhostPose || !command.hasInput)
+        {
+            HidePredictionMotionTrail(clearTrail: true);
+            return;
+        }
+
+        EnsurePredictionMotionTrailVisual();
+
+        if (motionTrailRoot == null || motionTrail == null)
+        {
+            return;
+        }
+
+        motionTrailRoot.position = visualGhostPosition + Vector3.up * motionTrailHeightOffset;
+        motionTrail.time = Mathf.Max(0.01f, motionTrailTime);
+        motionTrail.minVertexDistance = Mathf.Max(0.001f, motionTrailMinVertexDistance);
+        motionTrail.startWidth = Mathf.Max(0.001f, motionTrailHeadWidth);
+        motionTrail.endWidth = Mathf.Max(0.001f, motionTrailTailWidth);
+
+        float distance = Vector3.Distance(targetRig.position, visualGhostPosition);
+        bool canEmit = distance >= Mathf.Max(0f, minTrailDistance)
+            && (!hideTrailWhenConverged || !isConverged);
+
+        Vector3 planarDirection = new Vector3(command.predictionWorldVelocity.x, 0f, command.predictionWorldVelocity.z);
+        if (canEmit && planarDirection.sqrMagnitude > 1e-4f)
+        {
+            planarDirection.Normalize();
+            if (clearMotionTrailOnDirectionChange
+                && hasLastMotionTrailDirection
+                && Vector3.Angle(lastMotionTrailDirectionWorld, planarDirection) > Mathf.Max(0f, motionTrailClearAngleDeg))
+            {
+                motionTrail.Clear();
+            }
+
+            lastMotionTrailDirectionWorld = planarDirection;
+            hasLastMotionTrailDirection = true;
+        }
+        else if (!canEmit)
+        {
+            hasLastMotionTrailDirection = false;
+        }
+
+        motionTrailRoot.gameObject.SetActive(true);
+        motionTrail.emitting = canEmit;
+        motionTrailEmitting = canEmit;
+    }
+
+    void EnsurePredictionMotionTrailVisual()
+    {
+        if (motionTrailRoot != null && motionTrail != null)
+        {
+            return;
+        }
+
+        DestroyPredictionMotionTrailVisual();
+
+        GameObject root = new GameObject("__PredictionMotionTrail");
+        root.transform.SetParent(transform, false);
+        motionTrailRoot = root.transform;
+
+        motionTrailMaterial = CreateTransparentTrailMaterial("__PredictionMotionTrailMat");
+        motionTrailGradient = BuildMotionTrailGradient();
+
+        motionTrail = root.AddComponent<TrailRenderer>();
+        motionTrail.autodestruct = false;
+        motionTrail.emitting = false;
+        motionTrail.time = Mathf.Max(0.01f, motionTrailTime);
+        motionTrail.minVertexDistance = Mathf.Max(0.001f, motionTrailMinVertexDistance);
+        motionTrail.startWidth = Mathf.Max(0.001f, motionTrailHeadWidth);
+        motionTrail.endWidth = Mathf.Max(0.001f, motionTrailTailWidth);
+        motionTrail.alignment = LineAlignment.View;
+        motionTrail.textureMode = LineTextureMode.Stretch;
+        motionTrail.numCapVertices = 4;
+        motionTrail.numCornerVertices = 4;
+        motionTrail.shadowCastingMode = ShadowCastingMode.Off;
+        motionTrail.receiveShadows = false;
+        motionTrail.material = motionTrailMaterial;
+        motionTrail.colorGradient = motionTrailGradient;
+        motionTrail.Clear();
+    }
+
+    void HidePredictionMotionTrail(bool clearTrail)
+    {
+        if (motionTrail != null)
+        {
+            motionTrail.emitting = false;
+            if (clearTrail)
+            {
+                motionTrail.Clear();
+            }
+        }
+
+        if (motionTrailRoot != null && clearTrail)
+        {
+            motionTrailRoot.gameObject.SetActive(false);
+        }
+
+        hasLastMotionTrailDirection = false;
+        motionTrailEmitting = false;
+    }
+
+    void DestroyPredictionMotionTrailVisual()
+    {
+        if (motionTrailRoot != null)
+        {
+            Destroy(motionTrailRoot.gameObject);
+            motionTrailRoot = null;
+        }
+
+        if (motionTrailMaterial != null)
+        {
+            Destroy(motionTrailMaterial);
+            motionTrailMaterial = null;
+        }
+
+        motionTrail = null;
+    }
+
+    Gradient BuildMotionTrailGradient()
+    {
+        Gradient gradient = new Gradient();
+        gradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(motionTrailTailColor, 0f),
+                new GradientColorKey(motionTrailHeadColor, 1f)
+            },
+            new[]
+            {
+                new GradientAlphaKey(motionTrailTailColor.a, 0f),
+                new GradientAlphaKey(motionTrailHeadColor.a, 1f)
+            });
+        return gradient;
+    }
+
+    static Vector3 QuadraticBezier(Vector3 start, Vector3 control, Vector3 end, float t)
+    {
+        float u = 1f - t;
+        return u * u * start + 2f * u * t * control + t * t * end;
+    }
+
+    static Material CreateTransparentTrailMaterial(string materialName)
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+        if (shader == null)
+        {
+            shader = Shader.Find("Unlit/Color");
+        }
+        if (shader == null)
+        {
+            shader = Shader.Find("Standard");
+        }
+
+        Material material = new Material(shader)
+        {
+            name = materialName,
+            hideFlags = HideFlags.DontSave
+        };
+
+        Color white = Color.white;
+        if (material.HasProperty("_BaseColor"))
+        {
+            material.SetColor("_BaseColor", white);
+        }
+        if (material.HasProperty("_Color"))
+        {
+            material.SetColor("_Color", white);
+        }
+
+        ConfigureTransparentTrailMaterial(material);
+        return material;
+    }
+
+    static void ConfigureTransparentTrailMaterial(Material material)
+    {
+        if (material == null)
+        {
+            return;
+        }
+
+        if (material.HasProperty("_Surface"))
+        {
+            material.SetFloat("_Surface", 1f);
+        }
+        if (material.HasProperty("_Blend"))
+        {
+            material.SetFloat("_Blend", 0f);
+        }
+        if (material.HasProperty("_AlphaClip"))
+        {
+            material.SetFloat("_AlphaClip", 0f);
+        }
+        if (material.HasProperty("_SrcBlend"))
+        {
+            material.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+        }
+        if (material.HasProperty("_DstBlend"))
+        {
+            material.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+        }
+        if (material.HasProperty("_ZWrite"))
+        {
+            material.SetInt("_ZWrite", 0);
+        }
+        if (material.HasProperty("_Mode"))
+        {
+            material.SetFloat("_Mode", 3f);
+        }
+
+        material.SetOverrideTag("RenderType", "Transparent");
+        material.DisableKeyword("_ALPHATEST_ON");
+        material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        material.EnableKeyword("_ALPHABLEND_ON");
+        material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        material.renderQueue = (int)RenderQueue.Transparent;
     }
 
     void UpdateConvergenceState(bool forceNotify)

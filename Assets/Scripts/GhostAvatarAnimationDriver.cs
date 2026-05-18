@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 [DefaultExecutionOrder(260)]
 [DisallowMultipleComponent]
@@ -17,11 +19,14 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     public bool hideExistingRenderersOnStart = true;
     public bool disableExistingCollidersOnStart = true;
     public bool disablePrefabControlScripts = true;
+    public bool preserveCustomPrefabBehaviours = true;
     public bool disablePrefabColliders = true;
     public bool disablePrefabCamerasAndLights = true;
     public bool applyGhostMaterialToPrefab = true;
+    public bool preservePrefabMaterialTextures = true;
     public bool applyRootLeanToPrefab = false;
-    public Color ghostColor = new Color(0.18f, 0.8f, 1f, 0.38f);
+    public bool enablePrefabMotionFallback = true;
+    public Color ghostColor = new Color(0.18f, 0.8f, 1f, 0.28f);
     [Min(0.1f)] public float visualScale = 1f;
     public Vector3 visualLocalPosition = Vector3.zero;
     public Vector3 visualLocalEulerAngles = Vector3.zero;
@@ -36,6 +41,9 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     [Min(0f)] public float idleBobAmplitude = 0.06f;
     [Min(0f)] public float idleBobFrequency = 1.8f;
     [Min(0f)] public float flyLeanAngleDeg = 28f;
+    [Min(0f)] public float prefabPitchAngleDeg = 18f;
+    [Min(0f)] public float prefabRollAngleDeg = 24f;
+    [Min(0f)] public float prefabClimbPitchAngleDeg = 10f;
 
     [Header("Animator Parameters")]
     public string floatBoolParameter = "Float";
@@ -53,11 +61,32 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     [SerializeField] float smoothedSpeed01;
     [SerializeField] bool isAscending;
     [SerializeField] bool isDescending;
+    [SerializeField] bool prefabHasCompatibleMotionBehaviours;
 
     const string VisualRootName = "__PredictiveGhostAvatarVisual";
+    static readonly string[] UnsafePrefabBehaviourTokens =
+    {
+        "agent",
+        "audio",
+        "camera",
+        "datasink",
+        "datasource",
+        "decision",
+        "input",
+        "locomotion",
+        "network",
+        "publisher",
+        "receiver",
+        "record",
+        "sender",
+        "socket",
+        "stream",
+        "telemetry"
+    };
 
     readonly HashSet<int> animatorParameterHashes = new HashSet<int>();
     readonly List<Renderer> proceduralRenderers = new List<Renderer>();
+    readonly List<Material> transparentPrefabMaterials = new List<Material>();
 
     Transform visualRoot;
     Transform head;
@@ -109,6 +138,15 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
             Destroy(ghostMaterial);
             ghostMaterial = null;
         }
+
+        for (int i = 0; i < transparentPrefabMaterials.Count; i++)
+        {
+            if (transparentPrefabMaterials[i] != null)
+            {
+                Destroy(transparentPrefabMaterials[i]);
+            }
+        }
+        transparentPrefabMaterials.Clear();
     }
 
     void ResolveReferences()
@@ -227,14 +265,28 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
             return;
         }
 
+        prefabHasCompatibleMotionBehaviours = false;
+
         if (disablePrefabControlScripts)
         {
             MonoBehaviour[] behaviours = root.GetComponentsInChildren<MonoBehaviour>(true);
             for (int i = 0; i < behaviours.Length; i++)
             {
-                if (behaviours[i] != null)
+                MonoBehaviour behaviour = behaviours[i];
+                if (behaviour == null)
                 {
-                    behaviours[i].enabled = false;
+                    continue;
+                }
+
+                if (ShouldDisablePrefabBehaviour(behaviour))
+                {
+                    behaviour.enabled = false;
+                    continue;
+                }
+
+                if (CouldProvidePrefabMotion(behaviour))
+                {
+                    prefabHasCompatibleMotionBehaviours = true;
                 }
             }
         }
@@ -292,6 +344,68 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
         }
     }
 
+    bool ShouldDisablePrefabBehaviour(MonoBehaviour behaviour)
+    {
+        if (behaviour == null)
+        {
+            return false;
+        }
+
+        if (!preserveCustomPrefabBehaviours)
+        {
+            return true;
+        }
+
+        Type type = behaviour.GetType();
+        string namespaceName = type.Namespace ?? string.Empty;
+        if (namespaceName.StartsWith("Unity", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string typeName = type.Name;
+        return ContainsUnsafePrefabToken(typeName)
+            || ContainsUnsafePrefabToken(namespaceName);
+    }
+
+    bool CouldProvidePrefabMotion(MonoBehaviour behaviour)
+    {
+        if (behaviour == null)
+        {
+            return false;
+        }
+
+        Type type = behaviour.GetType();
+        string namespaceName = type.Namespace ?? string.Empty;
+        if (namespaceName.StartsWith("Unity", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string typeName = type.Name;
+        return !ContainsUnsafePrefabToken(typeName)
+            && !ContainsUnsafePrefabToken(namespaceName);
+    }
+
+    static bool ContainsUnsafePrefabToken(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        string lowered = text.ToLowerInvariant();
+        for (int i = 0; i < UnsafePrefabBehaviourTokens.Length; i++)
+        {
+            if (lowered.Contains(UnsafePrefabBehaviourTokens[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     void ApplyGhostMaterialToVisualRoot()
     {
         if (GetVisualRoot() == null)
@@ -307,6 +421,24 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
             Renderer renderer = renderers[i];
             if (renderer == null)
             {
+                continue;
+            }
+
+            if (preservePrefabMaterialTextures)
+            {
+                Material[] instanceMaterials = renderer.materials;
+                for (int j = 0; j < instanceMaterials.Length; j++)
+                {
+                    Material material = instanceMaterials[j];
+                    if (material == null)
+                    {
+                        continue;
+                    }
+
+                    ApplyTransparentAlphaToMaterial(material, ghostColor.a);
+                    transparentPrefabMaterials.Add(material);
+                }
+                renderer.materials = instanceMaterials;
                 continue;
             }
 
@@ -408,26 +540,93 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
             return;
         }
 
-        if (ghostMaterial.HasProperty("_BaseColor"))
+        ApplyTransparentColorToMaterial(ghostMaterial, color);
+    }
+
+    static void ApplyTransparentColorToMaterial(Material material, Color color)
+    {
+        if (material == null)
         {
-            ghostMaterial.SetColor("_BaseColor", color);
-        }
-        if (ghostMaterial.HasProperty("_Color"))
-        {
-            ghostMaterial.SetColor("_Color", color);
-        }
-        if (ghostMaterial.HasProperty("_Surface"))
-        {
-            ghostMaterial.SetFloat("_Surface", 1f);
-        }
-        if (ghostMaterial.HasProperty("_ZWrite"))
-        {
-            ghostMaterial.SetFloat("_ZWrite", 0f);
+            return;
         }
 
-        ghostMaterial.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
-        ghostMaterial.EnableKeyword("_ALPHAPREMULTIPLY_ON");
-        ghostMaterial.renderQueue = 3000;
+        if (material.HasProperty("_BaseColor"))
+        {
+            material.SetColor("_BaseColor", color);
+        }
+        if (material.HasProperty("_Color"))
+        {
+            material.SetColor("_Color", color);
+        }
+
+        ConfigureTransparentMaterial(material);
+    }
+
+    static void ApplyTransparentAlphaToMaterial(Material material, float alpha)
+    {
+        if (material == null)
+        {
+            return;
+        }
+
+        if (material.HasProperty("_BaseColor"))
+        {
+            Color color = material.GetColor("_BaseColor");
+            color.a = Mathf.Clamp01(alpha);
+            material.SetColor("_BaseColor", color);
+        }
+        if (material.HasProperty("_Color"))
+        {
+            Color color = material.GetColor("_Color");
+            color.a = Mathf.Clamp01(alpha);
+            material.SetColor("_Color", color);
+        }
+
+        ConfigureTransparentMaterial(material);
+    }
+
+    static void ConfigureTransparentMaterial(Material material)
+    {
+        if (material == null)
+        {
+            return;
+        }
+
+        if (material.HasProperty("_Surface"))
+        {
+            material.SetFloat("_Surface", 1f);
+        }
+        if (material.HasProperty("_Blend"))
+        {
+            material.SetFloat("_Blend", 0f);
+        }
+        if (material.HasProperty("_AlphaClip"))
+        {
+            material.SetFloat("_AlphaClip", 0f);
+        }
+        if (material.HasProperty("_SrcBlend"))
+        {
+            material.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+        }
+        if (material.HasProperty("_DstBlend"))
+        {
+            material.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+        }
+        if (material.HasProperty("_ZWrite"))
+        {
+            material.SetInt("_ZWrite", 0);
+        }
+        if (material.HasProperty("_Mode"))
+        {
+            material.SetFloat("_Mode", 3f);
+        }
+
+        material.SetOverrideTag("RenderType", "Transparent");
+        material.DisableKeyword("_ALPHATEST_ON");
+        material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        material.EnableKeyword("_ALPHABLEND_ON");
+        material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        material.renderQueue = (int)RenderQueue.Transparent;
     }
 
     void UpdateMotionState()
@@ -482,9 +681,31 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
         }
 
         float bob = Mathf.Sin(Time.time * idleBobFrequency) * idleBobAmplitude * (1f - smoothedSpeed01);
-        float lean = (!usingPrefabVisual || applyRootLeanToPrefab) ? -flyLeanAngleDeg * smoothedSpeed01 : 0f;
         visualRoot.localPosition = visualLocalPosition + new Vector3(0f, bob, 0f);
-        visualRoot.localRotation = Quaternion.Euler(visualLocalEulerAngles) * Quaternion.Euler(lean, 0f, 0f);
+
+        Quaternion motionRotation = Quaternion.identity;
+        if (usingPrefabVisual)
+        {
+            bool shouldUsePrefabFallback = enablePrefabMotionFallback
+                && (applyRootLeanToPrefab || !prefabHasCompatibleMotionBehaviours);
+
+            if (shouldUsePrefabFallback)
+            {
+                float climb01 = verticalSpeedReference <= 0f
+                    ? 0f
+                    : Mathf.Clamp(localVelocity.y / verticalSpeedReference, -1f, 1f);
+                float pitch = (-smoothedFlyZ * prefabPitchAngleDeg) + (climb01 * prefabClimbPitchAngleDeg);
+                float roll = -smoothedFlyX * prefabRollAngleDeg;
+                motionRotation = Quaternion.Euler(pitch, 0f, roll);
+            }
+        }
+        else
+        {
+            float lean = -flyLeanAngleDeg * smoothedSpeed01;
+            motionRotation = Quaternion.Euler(lean, 0f, 0f);
+        }
+
+        visualRoot.localRotation = Quaternion.Euler(visualLocalEulerAngles) * motionRotation;
         visualRoot.localScale = visualLocalScale * visualScale;
     }
 
@@ -498,6 +719,11 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
         Color color = ghostColor;
         color.a = Mathf.Clamp01(ghostColor.a + Mathf.Sin(Time.time * visualAlphaPulseFrequency) * visualAlphaPulse);
         ApplyGhostMaterialColor(color);
+
+        for (int i = 0; i < transparentPrefabMaterials.Count; i++)
+        {
+            ApplyTransparentAlphaToMaterial(transparentPrefabMaterials[i], color.a);
+        }
     }
 
     void UpdateProceduralVisual()

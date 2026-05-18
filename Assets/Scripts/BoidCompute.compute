@@ -1,4 +1,4 @@
-﻿#pragma kernel CSMain
+#pragma kernel CSMain
 static const int threadGroupSize = 1024;
 
 struct Boid {
@@ -15,7 +15,6 @@ RWStructuredBuffer<Boid> boids;
 int numBoids;
 float viewRadius;
 float avoidRadius;
-float separationEpsilonSqr;
 
 [numthreads(threadGroupSize,1,1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
@@ -24,37 +23,21 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float viewRadiusSqr = viewRadius * viewRadius;
-    float avoidRadiusSqr = avoidRadius * avoidRadius;
-    float minSqrDst = max (separationEpsilonSqr, 1e-8);
-
-    float3 flockHeading = float3 (0, 0, 0);
-    float3 flockCentre = float3 (0, 0, 0);
-    float3 separationHeading = float3 (0, 0, 0);
-    int numFlockmates = 0;
-
-    float3 positionA = boids[id.x].position;
-
     for (int indexB = 0; indexB < numBoids; indexB ++) {
         if (id.x != indexB) {
             Boid boidB = boids[indexB];
-            float3 offset = boidB.position - positionA;
+            float3 offset = boidB.position - boids[id.x].position;
             float sqrDst = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z;
 
-            if (sqrDst < viewRadiusSqr) {
-                numFlockmates += 1;
-                flockHeading += boidB.direction;
-                flockCentre += boidB.position;
+            if (sqrDst < viewRadius * viewRadius) {
+                boids[id.x].numFlockmates += 1;
+                boids[id.x].flockHeading += boidB.direction;
+                boids[id.x].flockCentre += boidB.position;
 
-                if (sqrDst < avoidRadiusSqr) {
-                    separationHeading -= offset / max (sqrDst, minSqrDst);
+                if (sqrDst < avoidRadius * avoidRadius) {
+                    boids[id.x].separationHeading -= offset / sqrDst;
                 }
             }
         }
     }
-
-    boids[id.x].flockHeading = flockHeading;
-    boids[id.x].flockCentre = flockCentre;
-    boids[id.x].separationHeading = separationHeading;
-    boids[id.x].numFlockmates = numFlockmates;
 }

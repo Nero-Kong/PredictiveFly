@@ -442,19 +442,19 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 51859307}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: f1b9c70e2cc64e5eb7034eb8f8ff9c2d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   targetCamera: {fileID: 51859312}
-  visibleOnStart: 1
+  visibleOnStart: 0
   toggleKey: 109
   markerLocalPosition: {x: 0, y: 0, z: 2}
   markerSize: 0.08
   markerThickness: 0.01
   markerColor: {r: 0, g: 1, b: 0.2, a: 1}
-  isVisible: 1
+  isVisible: 0
 --- !u!1 &52050377
 GameObject:
   m_ObjectHideFlags: 0
@@ -582,21 +582,24 @@ MonoBehaviour:
   autoFindLocomotion: 1
   animator: {fileID: 0}
   animatorController: {fileID: 0}
-  visualPrefab: {fileID: 7018556255205192675, guid: d72fb8f83c2ff3f43985a16eab0272f3, type: 3}
+  visualPrefab: {fileID: 5054379811673952670, guid: e746f881748d3a147949e70e5c570880, type: 3}
   buildProceduralVisual: 0
   hideExistingRenderersOnStart: 1
   disableExistingCollidersOnStart: 1
   disablePrefabControlScripts: 1
+  preserveCustomPrefabBehaviours: 1
   disablePrefabColliders: 1
   disablePrefabCamerasAndLights: 1
   applyGhostMaterialToPrefab: 1
+  preservePrefabMaterialTextures: 1
   applyRootLeanToPrefab: 0
-  ghostColor: {r: 0.18, g: 0.8, b: 1, a: 0.38}
-  visualScale: 0.8
+  enablePrefabMotionFallback: 1
+  ghostColor: {r: 0.18, g: 0.8, b: 1, a: 0.28}
+  visualScale: 0.25
   visualLocalPosition: {x: 0, y: 1.36, z: 0}
   visualLocalEulerAngles: {x: 0, y: 0, z: 0}
   visualLocalScale: {x: 1, y: 1, z: 1}
-  visualAlphaPulse: 0.08
+  visualAlphaPulse: 0.04
   visualAlphaPulseFrequency: 1.4
   activeSpeedReference: 2.5
   verticalSpeedReference: 1.5
@@ -604,6 +607,9 @@ MonoBehaviour:
   idleBobAmplitude: 0.06
   idleBobFrequency: 1.8
   flyLeanAngleDeg: 28
+  prefabPitchAngleDeg: 18
+  prefabRollAngleDeg: 24
+  prefabClimbPitchAngleDeg: 10
   floatBoolParameter: Float
   sprintBoolParameter: Sprint
   ascendBoolParameter: Ascend
@@ -724,7 +730,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 58224651}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 80ee10dda0405eb43b43cedca54693ef, type: 3}
   m_Name: 
@@ -1227,9 +1233,12 @@ MonoBehaviour:
   targetRig: {fileID: 132756592}
   head: {fileID: 51859308}
   ghostAvatar: {fileID: 52050381}
-  snapGhostToPrediction: 1
-  ghostPositionResponse: 30
-  ghostYawResponse: 30
+  snapGhostToPrediction: 0
+  ghostPositionResponse: 18
+  ghostYawResponse: 18
+  predictionMethod: 0
+  switchPredictionMethodKey: 112
+  resetEstimatorOnMethodSwitch: 1
   minTranslationPredictionWindow: 0.08
   maxTranslationPredictionWindow: 0.45
   minYawPredictionWindow: 0.05
@@ -1255,6 +1264,27 @@ MonoBehaviour:
   maxYawCatchUpSpeedDeg: 120
   convergenceDistance: 0.05
   convergenceYawThresholdDeg: 3
+  showPredictionPath: 0
+  hidePathWhenConverged: 1
+  predictionPathMinDistance: 0.12
+  predictionPathHeightOffset: 1.15
+  predictionPathArcHeight: 0.08
+  predictionPathSegmentCount: 12
+  predictionPathWidth: 0.035
+  predictionPathStartColor: {r: 0.18, g: 0.8, b: 1, a: 0.04}
+  predictionPathEndColor: {r: 0.18, g: 0.8, b: 1, a: 0.34}
+  showPredictionTrail: 0
+  hideTrailWhenConverged: 1
+  minTrailDistance: 0.12
+  motionTrailHeightOffset: 1.15
+  motionTrailTime: 0.35
+  motionTrailMinVertexDistance: 0.035
+  motionTrailHeadWidth: 0.05
+  motionTrailTailWidth: 0.004
+  motionTrailTailColor: {r: 0.18, g: 0.8, b: 1, a: 0}
+  motionTrailHeadColor: {r: 0.18, g: 0.8, b: 1, a: 0.14}
+  clearMotionTrailOnDirectionChange: 1
+  motionTrailClearAngleDeg: 45
   horizontalSpeed: 5
   planarDeadZone: 0.06
   planarMaxOffset: 0.14
@@ -1801,7 +1831,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &496829145
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1809,7 +1839,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 496829143}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: c669049a57469644a9cc25734f4e6e28, type: 3}
   m_Name: 
@@ -2713,7 +2743,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 2001783956}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 7c6eb17132f24478bf2c1000fca61a86, type: 3}
   m_Name: 
@@ -4067,8 +4097,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   settings: {fileID: 11400000, guid: fd4bc51c395304add92e7ac263cc6d3f, type: 2}
-  target: {fileID: 0}
   compute: {fileID: 7200000, guid: c51b961c8b9d746f1a2f242fa7bf1a31, type: 3}
+  target: {fileID: 0}
   minSpeed: 5
   maxSpeed: 8
   perceptionRadius: 2.5
@@ -4078,23 +4108,8 @@ MonoBehaviour:
   cohesionWeight: 1
   seperateWeight: 2.5
   targetWeight: 2
-  obstacleMask:
-    serializedVersion: 2
-    m_Bits: 4294967295
-  boundsRadius: 0.27
   avoidCollisionWeight: 20
   collisionAvoidDst: 5
-  constrainToBounds: 1
-  useManagerPositionAsBoundsCenter: 1
-  boundsCenter: {x: 0, y: 0, z: 0}
-  boundsExtents: {x: 20, y: 8, z: 20}
-  boundsSoftZone: 0.8
-  boundsSteerWeight: 8
-  hardClampToBounds: 1
-  targetPositionSmoothing: 16
-  maxAcceleration: 0
-  maxAvoidanceRays: 96
-  separationEpsilonSqr: 0.0001
 --- !u!4 &2001783958
 Transform:
   m_ObjectHideFlags: 0
