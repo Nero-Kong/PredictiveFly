@@ -7,6 +7,12 @@ using UnityEngine.Rendering;
 [DisallowMultipleComponent]
 public class GhostAvatarAnimationDriver : MonoBehaviour
 {
+    public enum ProceduralVisualShape
+    {
+        Drone,
+        Humanoid
+    }
+
     [Header("References")]
     public PredictiveGhostAvatarLocomotion locomotion;
     public bool autoFindLocomotion = true;
@@ -24,6 +30,7 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     public bool disablePrefabCamerasAndLights = true;
     public bool applyGhostMaterialToPrefab = true;
     public bool preservePrefabMaterialTextures = true;
+    public ProceduralVisualShape proceduralVisualShape = ProceduralVisualShape.Drone;
     public bool applyRootLeanToPrefab = false;
     public bool enablePrefabMotionFallback = true;
     public Color ghostColor = new Color(0.18f, 0.8f, 1f, 0.28f);
@@ -96,6 +103,10 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     Transform rightArm;
     Transform leftLeg;
     Transform rightLeg;
+    Transform rotorFrontLeft;
+    Transform rotorFrontRight;
+    Transform rotorRearLeft;
+    Transform rotorRearRight;
     Material ghostMaterial;
     Vector3 lastPosition;
     bool hasLastPosition;
@@ -147,6 +158,33 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
             }
         }
         transparentPrefabMaterials.Clear();
+    }
+
+    public void SetGhostVisible(bool visible)
+    {
+        Transform root = GetVisualRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            renderers[i].enabled = visible;
+        }
+    }
+
+    public void SetGhostAlpha(float alpha, float alphaPulse)
+    {
+        ghostColor.a = Mathf.Clamp01(alpha);
+        visualAlphaPulse = Mathf.Max(0f, alphaPulse);
+
+        ApplyGhostMaterialColor(ghostColor);
+        for (int i = 0; i < transparentPrefabMaterials.Count; i++)
+        {
+            ApplyTransparentAlphaToMaterial(transparentPrefabMaterials[i], ghostColor.a);
+        }
     }
 
     void ResolveReferences()
@@ -231,8 +269,29 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
 
     void EnsurePrefabVisual()
     {
-        if (visualPrefab == null || GetVisualRoot() != null)
+        if (visualPrefab == null)
         {
+            return;
+        }
+
+        if (GetVisualRoot() != null)
+        {
+            usingPrefabVisual = true;
+            if (animator == null)
+            {
+                animator = visualRoot.GetComponentInChildren<Animator>(true);
+            }
+
+            if (animator != null && animatorController != null)
+            {
+                animator.runtimeAnimatorController = animatorController;
+            }
+
+            if (applyGhostMaterialToPrefab && transparentPrefabMaterials.Count == 0)
+            {
+                ApplyGhostMaterialToVisualRoot();
+            }
+
             return;
         }
 
@@ -474,6 +533,12 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
 
         EnsureGhostMaterial();
 
+        if (proceduralVisualShape == ProceduralVisualShape.Drone)
+        {
+            EnsureProceduralDroneVisual();
+            return;
+        }
+
         hips = CreatePart("Hips", PrimitiveType.Sphere, new Vector3(0f, 0.82f, -0.04f), new Vector3(0.36f, 0.2f, 0.24f));
         chest = CreatePart("Chest", PrimitiveType.Capsule, new Vector3(0f, 1.22f, 0f), new Vector3(0.28f, 0.42f, 0.2f));
         head = CreatePart("Head", PrimitiveType.Sphere, new Vector3(0f, 1.72f, 0.04f), new Vector3(0.28f, 0.28f, 0.28f));
@@ -481,6 +546,20 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
         rightArm = CreatePart("RightArm", PrimitiveType.Capsule, new Vector3(0.34f, 1.35f, 0.22f), new Vector3(0.08f, 0.42f, 0.08f));
         leftLeg = CreatePart("LeftLeg", PrimitiveType.Capsule, new Vector3(-0.13f, 0.42f, -0.14f), new Vector3(0.09f, 0.42f, 0.09f));
         rightLeg = CreatePart("RightLeg", PrimitiveType.Capsule, new Vector3(0.13f, 0.42f, -0.14f), new Vector3(0.09f, 0.42f, 0.09f));
+    }
+
+    void EnsureProceduralDroneVisual()
+    {
+        chest = CreatePart("DroneBody", PrimitiveType.Cube, Vector3.zero, new Vector3(0.46f, 0.12f, 0.62f));
+        head = CreatePart("DroneNose", PrimitiveType.Cube, new Vector3(0f, 0f, 0.38f), new Vector3(0.24f, 0.08f, 0.18f));
+        leftArm = CreatePart("LeftRotorBoom", PrimitiveType.Cube, new Vector3(-0.48f, 0f, 0f), new Vector3(0.72f, 0.045f, 0.045f));
+        rightArm = CreatePart("RightRotorBoom", PrimitiveType.Cube, new Vector3(0.48f, 0f, 0f), new Vector3(0.72f, 0.045f, 0.045f));
+        leftLeg = CreatePart("FrontRotorBoom", PrimitiveType.Cube, new Vector3(0f, 0f, 0.48f), new Vector3(0.045f, 0.045f, 0.72f));
+        rightLeg = CreatePart("RearRotorBoom", PrimitiveType.Cube, new Vector3(0f, 0f, -0.48f), new Vector3(0.045f, 0.045f, 0.72f));
+        rotorFrontLeft = CreatePart("RotorFrontLeft", PrimitiveType.Cylinder, new Vector3(-0.7f, 0.035f, 0.7f), new Vector3(0.32f, 0.018f, 0.32f));
+        rotorFrontRight = CreatePart("RotorFrontRight", PrimitiveType.Cylinder, new Vector3(0.7f, 0.035f, 0.7f), new Vector3(0.32f, 0.018f, 0.32f));
+        rotorRearLeft = CreatePart("RotorRearLeft", PrimitiveType.Cylinder, new Vector3(-0.7f, 0.035f, -0.7f), new Vector3(0.32f, 0.018f, 0.32f));
+        rotorRearRight = CreatePart("RotorRearRight", PrimitiveType.Cylinder, new Vector3(0.7f, 0.035f, -0.7f), new Vector3(0.32f, 0.018f, 0.32f));
     }
 
     Transform CreatePart(string partName, PrimitiveType primitiveType, Vector3 localPosition, Vector3 localScale)
@@ -730,6 +809,16 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     {
         if (!buildProceduralVisual || GetVisualRoot() == null)
         {
+            return;
+        }
+
+        if (proceduralVisualShape == ProceduralVisualShape.Drone)
+        {
+            float spin = Time.time * 1600f;
+            SetLocalRotation(rotorFrontLeft, Quaternion.Euler(0f, spin, 0f));
+            SetLocalRotation(rotorFrontRight, Quaternion.Euler(0f, -spin, 0f));
+            SetLocalRotation(rotorRearLeft, Quaternion.Euler(0f, -spin, 0f));
+            SetLocalRotation(rotorRearRight, Quaternion.Euler(0f, spin, 0f));
             return;
         }
 

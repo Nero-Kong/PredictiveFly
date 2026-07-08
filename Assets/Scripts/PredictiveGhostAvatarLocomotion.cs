@@ -1,12 +1,11 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Events;
-using UnityEngine.Rendering;
+using UnityEngine.Serialization;
 
 /// <summary>
-/// Predictive third-person separation locomotion built on the same head-offset
-/// command interpretation as HeadOffsetLocomotion.
-/// Attach this to the locomotion root (for example XRRig) and disable the
-/// original HeadOffsetLocomotion while testing this mode.
+/// Direct head-offset locomotion with an always-visible drone body and optional
+/// transparent state ghosts. The ghosts preview intent; they do not drive the XR rig.
 /// </summary>
 [DisallowMultipleComponent]
 public class PredictiveGhostAvatarLocomotion : MonoBehaviour
@@ -17,21 +16,100 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         KalmanVelocityEstimator
     }
 
+    public enum GhostVisualizationMode
+    {
+        RealTimeDroneBody,
+        DelayedDroneBody,
+        DelayedWithRealTimeGhost,
+        DelayedWithPredictiveGhost
+    }
+
+    public enum OrientationControlMode
+    {
+        Dynamic,
+        Static,
+        Coupled
+    }
+
+    public enum PlanarReferenceMode
+    {
+        InitialHeadPosition,
+        BodyAnchor
+    }
+
     [Header("Rig / HMD")]
-    [Tooltip("Locomotion root that should be pulled toward the ghost. Defaults to this object.")]
+    [Tooltip("Locomotion root moved by the direct embodied command. Defaults to this object.")]
     public Transform targetRig;
     [Tooltip("Tracked HMD/camera transform. Defaults to Camera.main.")]
     public Transform head;
 
-    [Header("Ghost Avatar")]
-    [Tooltip("Optional ghost avatar transform. Leave empty to run the logic without a visible mesh.")]
-    public Transform ghostAvatar;
-    [Tooltip("If true, the ghost snaps to the predicted pose each frame. Disable for a calmer visual preview.")]
+    [Header("Drone Body / State Ghost")]
+    [Tooltip("Opaque drone body transform. It is always shown and kept at the XR rig pose.")]
+    [FormerlySerializedAs("ghostAvatar")]
+    public Transform droneBodyAvatar;
+    [Tooltip("If true, the transparent state ghost snaps to its target pose each frame. Disable for a calmer visual preview.")]
     public bool snapGhostToPrediction;
-    [Tooltip("Ghost position response when snap is disabled. Higher = more immediate.")]
+    [Tooltip("Transparent state ghost position response when snap is disabled. Higher = more immediate.")]
     public float ghostPositionResponse = 18f;
-    [Tooltip("Ghost yaw response when snap is disabled. Higher = more immediate.")]
+    [Tooltip("Transparent state ghost yaw response when snap is disabled. Higher = more immediate.")]
     public float ghostYawResponse = 18f;
+
+    [Header("Drone State Modes")]
+    [Tooltip("Runtime condition. Number keys 1-4 switch these modes in Play Mode.")]
+    public GhostVisualizationMode visualizationMode = GhostVisualizationMode.DelayedWithPredictiveGhost;
+    [FormerlySerializedAs("firstPersonOnlyKey")]
+    public KeyCode realTimeDroneBodyKey = KeyCode.Alpha1;
+    [FormerlySerializedAs("currentGhostKey")]
+    public KeyCode delayedDroneBodyKey = KeyCode.Alpha2;
+    [FormerlySerializedAs("predictiveGhostKey")]
+    public KeyCode delayedRealTimeGhostKey = KeyCode.Alpha3;
+    [FormerlySerializedAs("combinedGhostKey")]
+    public KeyCode delayedPredictiveGhostKey = KeyCode.Alpha4;
+    [Tooltip("Optional transparent state ghost. If empty, a runtime copy of Drone Body Avatar is created when mode 3 or 4 is used.")]
+    [FormerlySerializedAs("currentGhostAvatar")]
+    public Transform stateGhostAvatar;
+    [Tooltip("Create a transparent state ghost copy automatically from Drone Body Avatar when needed.")]
+    [FormerlySerializedAs("autoCreateCurrentGhost")]
+    public bool autoCreateStateGhost = true;
+    [FormerlySerializedAs("currentGhostAlpha")]
+    [Range(0f, 1f)] public float droneBodyAlpha = 1f;
+    [FormerlySerializedAs("predictiveGhostAlpha")]
+    [Range(0f, 1f)] public float stateGhostAlpha = 0.28f;
+    [FormerlySerializedAs("predictiveGhostAlphaPulse")]
+    [Min(0f)] public float stateGhostAlphaPulse = 0.04f;
+
+    [Header("Input-To-Rig Delay")]
+    [Tooltip("Delay only the direct human locomotion command before it moves the XR rig. The predictive ghost stays real-time.")]
+    public bool enableInputToRigDelay;
+    [Tooltip("Latency in milliseconds between human body input and XR rig motion output.")]
+    [Min(0)] public int inputToRigDelayMilliseconds = 500;
+    [Tooltip("Drive delayed modes from the collision-constrained real-time drone pose history. This keeps the body and ghosts on one feasible trajectory after wall contact.")]
+    public bool useCollisionConsistentStateDelay = true;
+
+    [FormerlySerializedAs("enableCameraMotionDelay")]
+    [SerializeField, HideInInspector] bool legacyEnableCameraMotionDelay;
+    [FormerlySerializedAs("cameraMotionDelaySeconds")]
+    [SerializeField, HideInInspector] float legacyCameraMotionDelaySeconds = -1f;
+    [SerializeField, HideInInspector] bool legacyCameraMotionDelayMigrated;
+
+    [Header("Rig Collision Blocking")]
+    [Tooltip("Before moving the XR rig, sphere-cast a camera/probe volume and stop at scene geometry such as the transparent tube wall.")]
+    public bool enableSoftCollisionBlocking = true;
+    [Tooltip("Optional probe transform used for collision blocking. If empty, the HMD/head transform is used.")]
+    public Transform collisionProbe;
+    [Tooltip("Use the HMD/head as the default blocking probe so the camera gets stuck before entering the wall.")]
+    public bool useHeadAsCollisionProbe = true;
+    [Min(0.01f)] public float collisionProbeRadius = 0.22f;
+    [Min(0f)] public float collisionSkinWidth = 0.03f;
+    public LayerMask collisionBlockLayers = ~0;
+    public QueryTriggerInteraction collisionQueryTriggerInteraction = QueryTriggerInteraction.Ignore;
+    [Tooltip("Optional exact tube boundary. If empty, the script can find the generated IrairaBou tube at runtime.")]
+    public IrairaBouTubeBoundary tubeBoundary;
+    public bool autoFindTubeBoundary = true;
+    [Tooltip("Apply the same scene/tube reachability constraint to the real-time and predictive state ghosts.")]
+    public bool constrainStateGhostToReachableSpace = true;
+    [Tooltip("Number of small collision-checked steps used when placing the predictive ghost into the future.")]
+    [Range(1, 32)] public int predictiveGhostCollisionSteps = 10;
 
     [Header("Prediction")]
     [Tooltip("Prediction estimator used for the future ghost. This can be changed live in Play Mode.")]
@@ -82,61 +160,6 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Tooltip("Measurement noise for yaw-rate commands. Higher values smooth more but add lag.")]
     [Min(0.0001f)] public float kalmanYawMeasurementNoise = 36f;
 
-    [Header("Catch-Up")]
-    [Tooltip("Smooth time for the 1PP rig to catch up to the ghost position.")]
-    public float positionSmoothTime = 0.28f;
-    [Tooltip("Maximum catch-up speed for the 1PP rig.")]
-    public float maxCatchUpSpeed = 4f;
-    [Tooltip("Smooth time for the 1PP rig yaw to catch up to the ghost yaw.")]
-    public float yawSmoothTime = 0.22f;
-    [Tooltip("Maximum yaw catch-up speed in degrees per second.")]
-    public float maxYawCatchUpSpeedDeg = 120f;
-    [Tooltip("Distance threshold for treating rig and ghost as converged.")]
-    public float convergenceDistance = 0.05f;
-    [Tooltip("Yaw threshold for convergence in degrees.")]
-    public float convergenceYawThresholdDeg = 3f;
-
-    [Header("Prediction Path Preview")]
-    [Tooltip("Draw a direct future-intent path from the user's current body position to the predicted ghost.")]
-    public bool showPredictionPath;
-    [Tooltip("Hide the path once the rig has nearly caught up to the ghost.")]
-    public bool hidePathWhenConverged = true;
-    [Tooltip("Do not show the path for tiny ghost separations.")]
-    public float predictionPathMinDistance = 0.12f;
-    [Tooltip("Height offset for the floating path. Match the ghost/drone visual center.")]
-    public float predictionPathHeightOffset = 1.15f;
-    [Tooltip("Small upward arc added to the middle of the path.")]
-    public float predictionPathArcHeight = 0.08f;
-    [Tooltip("Number of points used to render the curved path.")]
-    [Min(2)] public int predictionPathSegmentCount = 12;
-    [Tooltip("Width of the path preview line.")]
-    public float predictionPathWidth = 0.035f;
-    public Color predictionPathStartColor = new Color(0.18f, 0.8f, 1f, 0.04f);
-    public Color predictionPathEndColor = new Color(0.18f, 0.8f, 1f, 0.34f);
-
-    [Header("Ghost Motion Trail")]
-    [Tooltip("Draw a short secondary fading trail behind the future ghost. The prediction path above is the main interpretive cue.")]
-    public bool showPredictionTrail;
-    [Tooltip("Stop emitting the trail once the rig has nearly caught up to the ghost.")]
-    public bool hideTrailWhenConverged = true;
-    [Tooltip("Do not emit the trail for tiny ghost separations.")]
-    public float minTrailDistance = 0.12f;
-    [Tooltip("Height offset used by the fading motion trail. Match the ghost/drone visual center rather than the floor-level rig root.")]
-    public float motionTrailHeightOffset = 1.15f;
-    [Tooltip("How long the fading motion trail remains visible in seconds.")]
-    public float motionTrailTime = 0.35f;
-    [Tooltip("Minimum distance between trail vertices. Lower values produce smoother trails but more geometry.")]
-    public float motionTrailMinVertexDistance = 0.035f;
-    [Tooltip("Trail width near the current ghost position.")]
-    public float motionTrailHeadWidth = 0.05f;
-    [Tooltip("Trail width at the fading tail.")]
-    public float motionTrailTailWidth = 0.004f;
-    public Color motionTrailTailColor = new Color(0.18f, 0.8f, 1f, 0f);
-    public Color motionTrailHeadColor = new Color(0.18f, 0.8f, 1f, 0.14f);
-    [Tooltip("Clear the ghost trail when the predicted direction changes sharply.")]
-    public bool clearMotionTrailOnDirectionChange = true;
-    public float motionTrailClearAngleDeg = 45f;
-
     [Header("Planar Translation")]
     [Tooltip("Maximum planar speed in m/s.")]
     public float horizontalSpeed = 5f;
@@ -151,8 +174,22 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Tooltip("Planar velocity smoothing (1/s).")]
     public float planarSmoothing = 10f;
 
+    [Header("Body Reference")]
+    [Tooltip("InitialHeadPosition uses the calibrated HMD position. BodyAnchor uses the current HMD-to-body-anchor offset, so stance drift and small steps do not become locomotion input.")]
+    public PlanarReferenceMode planarReferenceMode = PlanarReferenceMode.BodyAnchor;
+    [Tooltip("Provider for the waist/body anchor pose. Defaults to a BodyAnchorProvider on this object, adding one at runtime if needed.")]
+    public BodyAnchorProvider bodyAnchorProvider;
+    [Tooltip("Create a BodyAnchorProvider at runtime if body reference mode is enabled and no provider is assigned.")]
+    public bool autoCreateBodyAnchorProvider = true;
+    [Tooltip("Use the original initial-head-position reference while the body anchor is unavailable.")]
+    public bool fallbackToInitialHeadReference;
+    [Tooltip("Compute planar lean in the current body-yaw frame so whole-body turns do not become movement input.")]
+    public bool normalizePlanarOffsetByBodyYaw = true;
+    [Tooltip("Experimental: compute yaw control from HMD yaw relative to body yaw. Keep off until the body yaw source is stable; planar translation can still use the body anchor.")]
+    public bool useBodyRelativeHeadYaw;
+
     [Header("Orientation & Vertical")]
-    public HeadOffsetLocomotion.OrientationControlMode orientationMode = HeadOffsetLocomotion.OrientationControlMode.Dynamic;
+    public OrientationControlMode orientationMode = OrientationControlMode.Dynamic;
     [Tooltip("Maximum vertical speed for dynamic mode (m/s).")]
     public float verticalSpeed = 10f;
     [Tooltip("Ignore tiny vertical commands near level gaze. Prevents idle head pitch noise from activating prediction.")]
@@ -176,7 +213,11 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Tooltip("Also reset the locomotion root to its initial pose on recenter.")]
     public bool resetTargetPoseOnRecenter = true;
 
-    [Header("Feedback Hooks")]
+    [Header("Convergence Feedback")]
+    [Tooltip("Distance threshold for treating rig and predictive ghost as converged. Used for debug/events only.")]
+    public float convergenceDistance = 0.05f;
+    [Tooltip("Yaw threshold for convergence in degrees. Used for debug/events only.")]
+    public float convergenceYawThresholdDeg = 3f;
     public UnityEvent onConverged = new UnityEvent();
     public UnityEvent onSeparated = new UnityEvent();
 
@@ -194,17 +235,32 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [SerializeField] float currentYawPredictionConfidence;
     [SerializeField] Vector3 currentCenterOffsetLocal;
     [SerializeField] Vector3 currentPredictionVelocityLocal;
-    [SerializeField] Vector3 currentGhostOffsetLocal;
+    [SerializeField] Vector3 stateGhostOffsetLocal;
     [SerializeField] float currentHeadPitchDeg;
     [SerializeField] float currentVerticalCommand;
+    [SerializeField] bool debugHasBodyAnchor;
+    [SerializeField] bool debugBodyAnchorUsesYaw;
+    [SerializeField] bool debugUsingInitialHeadReferenceFallback;
+    [SerializeField] Vector3 debugBodyLocalHeadOffset;
+    [SerializeField] Vector3 debugBodyLocalMoveOffset;
+    [SerializeField] Vector3 debugPlanarSignalPointLocal;
+    [SerializeField] Vector3 debugPlanarSignalAnchorLocal;
+    [SerializeField] float debugBodyRelativeHeadYawDeg;
+    [SerializeField] float debugBodyRelativeHeadYawDeltaDeg;
+    [SerializeField] Vector3 realTimeDronePosition;
+    [SerializeField] float realTimeDroneYawDeg;
     [SerializeField] PredictionMethod activePredictionMethod;
-    [SerializeField] bool predictionPathVisible;
-    [SerializeField] bool motionTrailEmitting;
+    [SerializeField] GhostVisualizationMode activeVisualizationMode;
+    [SerializeField] bool inputToRigDelayBufferReady;
+    [SerializeField] float activeInputToRigDelayMilliseconds;
+    [SerializeField] bool rigMovementBlocked;
+    [SerializeField] string rigMovementBlockedBy;
+    [SerializeField] bool stateGhostMovementBlocked;
+    [SerializeField] string stateGhostMovementBlockedBy;
 
     Vector3 centerHeadLocal;
+    Vector3 neutralBodyLocalHeadOffset;
     Vector3 smoothedPlanarVelocityLocal;
-    Vector3 rigPositionVelocity;
-    float rigYawVelocity;
     Vector3 filteredPredictionVelocityWorld;
     Vector3 filteredPredictionAccelerationWorld;
     float filteredPredictionYawRateDeg;
@@ -212,8 +268,13 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     Vector3 initialTargetPosition;
     Quaternion initialTargetRotation = Quaternion.identity;
     bool hasInitialTargetPose;
+    bool hasCenterBodyAnchor;
+    bool centerBodyAnchorUsesYaw;
+    bool hasNeutralBodyRelativeHeadYaw;
+    float neutralBodyRelativeHeadYawDeg;
     bool hasGhostPose;
     bool hasVisualGhostPose;
+    bool hasRealTimeDronePose;
     bool warnedSetup;
     float sustainedInputTime;
     Vector3 lastRawPlanarDirectionWorld;
@@ -224,22 +285,47 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     Kalman1D kalmanVelocityZ;
     Kalman1D kalmanYawRateDeg;
     PredictionMethod lastPredictionMethod;
-    Transform predictionPathRoot;
-    LineRenderer predictionPathLine;
-    Material predictionPathMaterial;
-    Transform motionTrailRoot;
-    TrailRenderer motionTrail;
-    Material motionTrailMaterial;
-    Gradient motionTrailGradient;
-    Vector3 lastMotionTrailDirectionWorld;
-    bool hasLastMotionTrailDirection;
+    GhostVisualizationMode lastVisualizationMode;
+    GhostAvatarAnimationDriver droneBodyDriver;
+    GhostAvatarAnimationDriver stateGhostDriver;
+    bool createdRuntimeStateGhost;
+    readonly List<DelayedCommandSample> delayedDirectCommands = new List<DelayedCommandSample>();
+    readonly List<DronePoseSample> realTimeDronePoseHistory = new List<DronePoseSample>();
+    readonly RaycastHit[] rigCollisionHits = new RaycastHit[32];
 
     public bool IsConverged => isConverged;
     public Vector3 GhostPosition => visualGhostPosition;
     public Quaternion GhostRotation => Quaternion.Euler(0f, visualGhostYawDeg, 0f);
+    public bool HasRealTimeDronePose => hasRealTimeDronePose;
+    public Vector3 RealTimeDronePosition => hasRealTimeDronePose
+        ? realTimeDronePosition
+        : targetRig != null ? targetRig.position : transform.position;
+    public Quaternion RealTimeDroneRotation => Quaternion.Euler(
+        0f,
+        hasRealTimeDronePose
+            ? realTimeDroneYawDeg
+            : targetRig != null ? targetRig.eulerAngles.y : transform.eulerAngles.y,
+        0f);
+    public float RealTimeDroneYawDeg => hasRealTimeDronePose
+        ? realTimeDroneYawDeg
+        : targetRig != null ? targetRig.eulerAngles.y : transform.eulerAngles.y;
+    public Vector3 CurrentCenterOffsetLocal => currentCenterOffsetLocal;
+    public Vector3 CurrentPredictionVelocityLocal => currentPredictionVelocityLocal;
+    public float CurrentHeadPitchDeg => currentHeadPitchDeg;
+    public float CurrentVerticalCommand => currentVerticalCommand;
+    public float CurrentTranslationPredictionWindow => currentTranslationPredictionWindow;
+    public float CurrentYawPredictionWindow => currentYawPredictionWindow;
+    public float CurrentTranslationPredictionConfidence => currentTranslationPredictionConfidence;
+    public float CurrentYawPredictionConfidence => currentYawPredictionConfidence;
+    public bool IsRigMovementBlocked => rigMovementBlocked;
+    public string RigMovementBlockedBy => rigMovementBlockedBy;
+    public bool IsStateGhostMovementBlocked => stateGhostMovementBlocked;
+    public string StateGhostMovementBlockedBy => stateGhostMovementBlockedBy;
 
     void Awake()
     {
+        MigrateLegacyInputToRigDelay();
+
         if (targetRig == null)
         {
             targetRig = transform;
@@ -249,33 +335,37 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         {
             head = Camera.main.transform;
         }
+
+        ResolveBodyAnchorProvider();
     }
 
     void OnValidate()
     {
+        MigrateLegacyInputToRigDelay();
+        inputToRigDelayMilliseconds = Mathf.Max(0, inputToRigDelayMilliseconds);
+        predictiveGhostCollisionSteps = Mathf.Clamp(predictiveGhostCollisionSteps, 1, 32);
         activePredictionMethod = predictionMethod;
+        activeVisualizationMode = visualizationMode;
     }
 
     void OnEnable()
     {
+        MigrateLegacyInputToRigDelay();
         MigrateLegacyPredictionToggle();
         lastPredictionMethod = predictionMethod;
+        lastVisualizationMode = visualizationMode;
         SyncPredictionMethodDebugState();
+        SyncVisualizationModeDebugState();
+        RefreshTubeBoundaryReference();
+        ResolveBodyAnchorProvider();
         WarnAboutConflicts();
         CacheInitialTargetPose();
         CaptureCenter();
         ResetMotionState();
         SnapGhostToRig();
+        EnsureGhostModeReferences();
+        ApplyVisualizationMode(force: true);
         UpdateConvergenceState(forceNotify: false);
-        if (showPredictionPath)
-        {
-            EnsurePredictionPathVisual();
-        }
-
-        if (showPredictionTrail)
-        {
-            EnsurePredictionMotionTrailVisual();
-        }
     }
 
     void Update()
@@ -290,6 +380,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             RecenterNow();
         }
 
+        HandleVisualizationModeSwitchInput();
+        ApplyVisualizationModeIfChanged();
         HandlePredictionMethodSwitchInput();
         ApplyPredictionMethodIfChanged();
 
@@ -301,43 +393,49 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         LocomotionCommand command = SampleCommand(dt);
         hasActiveInput = command.hasInput;
+        stateGhostMovementBlocked = false;
+        stateGhostMovementBlockedBy = string.Empty;
 
-        UpdateGhostPose(command, dt);
-        FollowGhost(dt);
+        UpdateRealTimeDronePose(command, dt);
+        RecordRealTimeDronePose();
+
+        if (ShouldUseCollisionConsistentStateDelay())
+        {
+            ApplyDelayedDroneBodyPoseFromRealTimeHistory();
+        }
+        else
+        {
+            RecordDelayedDirectCommand(command);
+            LocomotionCommand directCommand = ResolveDelayedDirectCommand(command);
+            ApplyDirectFirstPersonLocomotion(directCommand, dt);
+        }
+
+        SyncDroneBodyTransform();
+
+        if (ShowsPredictiveStateGhost(visualizationMode))
+        {
+            UpdatePredictiveStateGhostPose(command, dt);
+        }
+        else if (ShowsRealTimeStateGhost(visualizationMode))
+        {
+            UpdateRealTimeStateGhostPose();
+        }
+        else
+        {
+            SetStateGhostPoseToRig(syncTransform: true);
+        }
+
+        SyncStateGhostTransform();
         UpdateConvergenceState(forceNotify: false);
-        UpdatePredictionVisualCues(command);
-    }
-
-    void OnDisable()
-    {
-        HidePredictionPathPreview();
-        HidePredictionMotionTrail(clearTrail: true);
     }
 
     void OnDestroy()
     {
-        if (predictionPathMaterial != null)
+        if (createdRuntimeStateGhost && stateGhostAvatar != null)
         {
-            Destroy(predictionPathMaterial);
-            predictionPathMaterial = null;
-        }
-
-        if (predictionPathRoot != null)
-        {
-            Destroy(predictionPathRoot.gameObject);
-            predictionPathRoot = null;
-        }
-
-        if (motionTrailMaterial != null)
-        {
-            Destroy(motionTrailMaterial);
-            motionTrailMaterial = null;
-        }
-
-        if (motionTrailRoot != null)
-        {
-            Destroy(motionTrailRoot.gameObject);
-            motionTrailRoot = null;
+            Destroy(stateGhostAvatar.gameObject);
+            stateGhostAvatar = null;
+            stateGhostDriver = null;
         }
     }
 
@@ -352,9 +450,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         ResetMotionState();
         CaptureCenter();
         SnapGhostToRig();
+        ApplyVisualizationMode(force: true);
         UpdateConvergenceState(forceNotify: false);
-        HidePredictionPathPreview();
-        HidePredictionMotionTrail(clearTrail: true);
     }
 
     [ContextMenu("Snap Ghost To Rig")]
@@ -365,16 +462,10 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             return;
         }
 
-        ghostPosition = targetRig.position;
-        ghostYawDeg = targetRig.eulerAngles.y;
-        visualGhostPosition = ghostPosition;
-        visualGhostYawDeg = ghostYawDeg;
-        hasGhostPose = true;
-        hasVisualGhostPose = true;
-        currentGhostOffsetLocal = Vector3.zero;
-        SyncGhostTransform();
-        HidePredictionPathPreview();
-        HidePredictionMotionTrail(clearTrail: true);
+        SetStateGhostPoseToRig(syncTransform: true);
+        SetRealTimeDronePoseToRig();
+        SyncDroneBodyTransform();
+        SyncStateGhostTransform();
     }
 
     [ContextMenu("Cycle Prediction Method")]
@@ -400,6 +491,493 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             : PredictionMethod.AccelerationJerkLimited);
     }
 
+    public void SetVisualizationMode(GhostVisualizationMode mode)
+    {
+        visualizationMode = mode;
+        ApplyVisualizationModeIfChanged(force: true);
+    }
+
+    void HandleVisualizationModeSwitchInput()
+    {
+        if (IsModeKeyDown(realTimeDroneBodyKey, KeyCode.Alpha1, KeyCode.Keypad1))
+        {
+            SetVisualizationMode(GhostVisualizationMode.RealTimeDroneBody);
+        }
+        else if (IsModeKeyDown(delayedDroneBodyKey, KeyCode.Alpha2, KeyCode.Keypad2))
+        {
+            SetVisualizationMode(GhostVisualizationMode.DelayedDroneBody);
+        }
+        else if (IsModeKeyDown(delayedRealTimeGhostKey, KeyCode.Alpha3, KeyCode.Keypad3))
+        {
+            SetVisualizationMode(GhostVisualizationMode.DelayedWithRealTimeGhost);
+        }
+        else if (IsModeKeyDown(delayedPredictiveGhostKey, KeyCode.Alpha4, KeyCode.Keypad4))
+        {
+            SetVisualizationMode(GhostVisualizationMode.DelayedWithPredictiveGhost);
+        }
+    }
+
+    static bool IsModeKeyDown(KeyCode configuredKey, KeyCode numberRowKey, KeyCode keypadKey)
+    {
+        if (configuredKey == KeyCode.None)
+        {
+            return false;
+        }
+
+        if (Input.GetKeyDown(configuredKey))
+        {
+            return true;
+        }
+
+        return configuredKey == numberRowKey && Input.GetKeyDown(keypadKey);
+    }
+
+    void ApplyVisualizationModeIfChanged(bool force = false)
+    {
+        if (!force && visualizationMode == lastVisualizationMode)
+        {
+            SyncVisualizationModeDebugState();
+            return;
+        }
+
+        bool wasShowingPredictiveGhost = ShowsPredictiveStateGhost(lastVisualizationMode);
+        bool willShowPredictiveGhost = ShowsPredictiveStateGhost(visualizationMode);
+        ResetInputToRigDelayState();
+        SetRealTimeDronePoseToRig();
+
+        if (!willShowPredictiveGhost)
+        {
+            SetStateGhostPoseToRig(syncTransform: true);
+        }
+        else if (!wasShowingPredictiveGhost || force)
+        {
+            ResetPredictionEstimatorState();
+            SetStateGhostPoseToRig(syncTransform: true);
+        }
+
+        lastVisualizationMode = visualizationMode;
+        SyncVisualizationModeDebugState();
+        ApplyVisualizationMode(force: true);
+
+        Debug.Log($"[PredictiveGhostAvatarLocomotion] Ghost visualization mode switched to {visualizationMode}.", this);
+    }
+
+    void ApplyVisualizationMode(bool force = false)
+    {
+        EnsureGhostModeReferences();
+
+        bool showStateGhost = ShowsStateGhost(visualizationMode);
+
+        if (showStateGhost)
+        {
+            EnsureStateGhostAvatar();
+        }
+
+        SetGhostAppearance(droneBodyAvatar, droneBodyDriver, true, droneBodyAlpha, 0f);
+        SetGhostAppearance(stateGhostAvatar, stateGhostDriver, showStateGhost, stateGhostAlpha, stateGhostAlphaPulse);
+
+        if (force)
+        {
+            SyncDroneBodyTransform();
+            SyncStateGhostTransform();
+        }
+    }
+
+    void EnsureGhostModeReferences()
+    {
+        droneBodyDriver = droneBodyAvatar == null
+            ? null
+            : droneBodyAvatar.GetComponent<GhostAvatarAnimationDriver>();
+        stateGhostDriver = stateGhostAvatar == null
+            ? null
+            : stateGhostAvatar.GetComponent<GhostAvatarAnimationDriver>();
+
+        if (droneBodyDriver != null)
+        {
+            droneBodyDriver.locomotion = this;
+        }
+
+        if (stateGhostDriver != null)
+        {
+            stateGhostDriver.locomotion = this;
+            stateGhostDriver.autoFindLocomotion = false;
+        }
+    }
+
+    void EnsureStateGhostAvatar()
+    {
+        if (stateGhostAvatar != null || !autoCreateStateGhost || droneBodyAvatar == null)
+        {
+            EnsureGhostModeReferences();
+            return;
+        }
+
+        GameObject clone = Instantiate(droneBodyAvatar.gameObject, droneBodyAvatar.position, droneBodyAvatar.rotation);
+        clone.name = $"{droneBodyAvatar.name}_TransparentState";
+        clone.transform.SetParent(droneBodyAvatar.parent, true);
+
+        stateGhostAvatar = clone.transform;
+        createdRuntimeStateGhost = true;
+
+        EnsureGhostModeReferences();
+        SetGhostAppearance(stateGhostAvatar, stateGhostDriver, true, stateGhostAlpha, stateGhostAlphaPulse);
+    }
+
+    void SetGhostAppearance(Transform ghostRoot, GhostAvatarAnimationDriver driver, bool visible, float alpha, float alphaPulse)
+    {
+        if (ghostRoot == null)
+        {
+            return;
+        }
+
+        if (driver != null)
+        {
+            driver.SetGhostAlpha(alpha, alphaPulse);
+            driver.SetGhostVisible(visible);
+        }
+        else
+        {
+            SetRenderersVisible(ghostRoot, visible);
+        }
+    }
+
+    static void SetRenderersVisible(Transform root, bool visible)
+    {
+        if (root == null)
+        {
+            return;
+        }
+
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            renderers[i].enabled = visible;
+        }
+    }
+
+    void SetStateGhostPoseToRig(bool syncTransform)
+    {
+        if (targetRig == null)
+        {
+            return;
+        }
+
+        ghostPosition = targetRig.position;
+        ghostYawDeg = targetRig.eulerAngles.y;
+        visualGhostPosition = ghostPosition;
+        visualGhostYawDeg = ghostYawDeg;
+        hasGhostPose = true;
+        hasVisualGhostPose = true;
+        stateGhostOffsetLocal = Vector3.zero;
+
+        if (syncTransform)
+        {
+            SyncStateGhostTransform();
+        }
+    }
+
+    void SetRealTimeDronePoseToRig()
+    {
+        if (targetRig == null)
+        {
+            return;
+        }
+
+        realTimeDronePosition = targetRig.position;
+        realTimeDroneYawDeg = targetRig.eulerAngles.y;
+        hasRealTimeDronePose = true;
+    }
+
+    void SyncDroneBodyTransform()
+    {
+        if (droneBodyAvatar == null || targetRig == null)
+        {
+            return;
+        }
+
+        droneBodyAvatar.SetPositionAndRotation(
+            targetRig.position,
+            Quaternion.Euler(0f, targetRig.eulerAngles.y, 0f));
+    }
+
+    void SyncStateGhostTransform()
+    {
+        if (stateGhostAvatar == null)
+        {
+            return;
+        }
+
+        if (ShowsRealTimeStateGhost(visualizationMode))
+        {
+            stateGhostAvatar.SetPositionAndRotation(
+                realTimeDronePosition,
+                Quaternion.Euler(0f, realTimeDroneYawDeg, 0f));
+            return;
+        }
+
+        if (ShowsPredictiveStateGhost(visualizationMode))
+        {
+            stateGhostAvatar.SetPositionAndRotation(
+                visualGhostPosition,
+                Quaternion.Euler(0f, visualGhostYawDeg, 0f));
+        }
+    }
+
+    void UpdateRealTimeDronePose(LocomotionCommand command, float dt)
+    {
+        if (!hasRealTimeDronePose)
+        {
+            SetRealTimeDronePoseToRig();
+        }
+
+        Vector3 requestedPosition = ClampPosition(realTimeDronePosition + command.directWorldVelocity * dt, positionLimits);
+        realTimeDronePosition = ResolveStateGhostReachablePosition(realTimeDronePosition, requestedPosition);
+        realTimeDroneYawDeg += command.directYawRateDeg * dt;
+    }
+
+    void UpdateRealTimeStateGhostPose()
+    {
+        ghostPosition = realTimeDronePosition;
+        ghostYawDeg = realTimeDroneYawDeg;
+        visualGhostPosition = ghostPosition;
+        visualGhostYawDeg = ghostYawDeg;
+        hasGhostPose = true;
+        hasVisualGhostPose = true;
+        stateGhostOffsetLocal = targetRig != null
+            ? targetRig.InverseTransformDirection(ghostPosition - targetRig.position)
+            : Vector3.zero;
+    }
+
+    void ApplyDirectFirstPersonLocomotion(LocomotionCommand command, float dt)
+    {
+        Vector3 nextPosition = targetRig.position + command.directWorldVelocity * dt;
+        float nextYaw = targetRig.eulerAngles.y + command.directYawRateDeg * dt;
+        Vector3 constrainedPosition = ResolveSoftBlockedRigPosition(ClampPosition(nextPosition, positionLimits));
+
+        targetRig.SetPositionAndRotation(
+            constrainedPosition,
+            Quaternion.Euler(0f, nextYaw, 0f));
+    }
+
+    bool ShouldUseCollisionConsistentStateDelay()
+    {
+        return useCollisionConsistentStateDelay
+            && GetInputToRigDelaySeconds() > 0f
+            && UsesDelayedRigInput(visualizationMode);
+    }
+
+    void RecordRealTimeDronePose()
+    {
+        float now = Time.time;
+        realTimeDronePoseHistory.Add(new DronePoseSample
+        {
+            time = now,
+            position = realTimeDronePosition,
+            yawDeg = realTimeDroneYawDeg
+        });
+
+        PruneDelayBuffer(realTimeDronePoseHistory, now, GetInputToRigDelaySeconds());
+    }
+
+    void ApplyDelayedDroneBodyPoseFromRealTimeHistory()
+    {
+        float delay = GetInputToRigDelaySeconds();
+        activeInputToRigDelayMilliseconds = delay * 1000f;
+        inputToRigDelayBufferReady = delay <= 0f || HasDelayBufferReached(realTimeDronePoseHistory, delay);
+        rigMovementBlocked = false;
+        rigMovementBlockedBy = string.Empty;
+
+        if (targetRig == null)
+        {
+            return;
+        }
+
+        if (delay <= 0f || realTimeDronePoseHistory.Count == 0)
+        {
+            targetRig.SetPositionAndRotation(
+                realTimeDronePosition,
+                Quaternion.Euler(0f, realTimeDroneYawDeg, 0f));
+            return;
+        }
+
+        DronePoseSample delayedPose = SampleDelayedDronePose(realTimeDronePoseHistory, Time.time - delay);
+        targetRig.SetPositionAndRotation(
+            ClampPosition(delayedPose.position, positionLimits),
+            Quaternion.Euler(0f, delayedPose.yawDeg, 0f));
+    }
+
+    void RecordDelayedDirectCommand(LocomotionCommand command)
+    {
+        float now = Time.time;
+        delayedDirectCommands.Add(new DelayedCommandSample
+        {
+            time = now,
+            command = command
+        });
+
+        PruneDelayBuffer(delayedDirectCommands, now, GetInputToRigDelaySeconds());
+    }
+
+    LocomotionCommand ResolveDelayedDirectCommand(LocomotionCommand fallbackCommand)
+    {
+        float delay = GetInputToRigDelaySeconds();
+        activeInputToRigDelayMilliseconds = delay * 1000f;
+        inputToRigDelayBufferReady = delay <= 0f || HasDelayBufferReached(delayedDirectCommands, delay);
+
+        if (delay <= 0f || delayedDirectCommands.Count == 0)
+        {
+            return fallbackCommand;
+        }
+
+        float targetTime = Time.time - delay;
+        return SampleDelayedCommand(delayedDirectCommands, targetTime);
+    }
+
+    float GetInputToRigDelaySeconds()
+    {
+        return enableInputToRigDelay && UsesDelayedRigInput(visualizationMode)
+            ? Mathf.Max(0f, inputToRigDelayMilliseconds) * 0.001f
+            : 0f;
+    }
+
+    void ResetInputToRigDelayState()
+    {
+        delayedDirectCommands.Clear();
+        realTimeDronePoseHistory.Clear();
+        activeInputToRigDelayMilliseconds = GetInputToRigDelaySeconds() * 1000f;
+        inputToRigDelayBufferReady = activeInputToRigDelayMilliseconds <= 0f;
+
+        float now = Time.time;
+        delayedDirectCommands.Add(new DelayedCommandSample
+        {
+            time = now,
+            command = default(LocomotionCommand)
+        });
+
+        if (targetRig != null)
+        {
+            realTimeDronePoseHistory.Add(new DronePoseSample
+            {
+                time = now,
+                position = targetRig.position,
+                yawDeg = targetRig.eulerAngles.y
+            });
+        }
+    }
+
+    static bool HasDelayBufferReached<T>(List<T> buffer, float delay) where T : IDelayedSample
+    {
+        return buffer.Count > 0 && Time.time - buffer[0].SampleTime >= delay;
+    }
+
+    static void PruneDelayBuffer<T>(List<T> buffer, float now, float delay) where T : IDelayedSample
+    {
+        float oldestNeededTime = now - Mathf.Max(delay + 1f, 1f);
+        while (buffer.Count > 2 && buffer[1].SampleTime < oldestNeededTime)
+        {
+            buffer.RemoveAt(0);
+        }
+    }
+
+    static LocomotionCommand SampleDelayedCommand(List<DelayedCommandSample> buffer, float targetTime)
+    {
+        if (buffer.Count == 1 || targetTime <= buffer[0].time)
+        {
+            return buffer[0].command;
+        }
+
+        for (int i = 1; i < buffer.Count; i++)
+        {
+            DelayedCommandSample next = buffer[i];
+            if (targetTime > next.time)
+            {
+                continue;
+            }
+
+            DelayedCommandSample previous = buffer[i - 1];
+            float span = Mathf.Max(1e-4f, next.time - previous.time);
+            float t = Mathf.Clamp01((targetTime - previous.time) / span);
+            return LerpCommand(previous.command, next.command, t);
+        }
+
+        return buffer[buffer.Count - 1].command;
+    }
+
+    static DronePoseSample SampleDelayedDronePose(List<DronePoseSample> buffer, float targetTime)
+    {
+        if (buffer.Count == 1 || targetTime <= buffer[0].time)
+        {
+            return buffer[0];
+        }
+
+        for (int i = 1; i < buffer.Count; i++)
+        {
+            DronePoseSample next = buffer[i];
+            if (targetTime > next.time)
+            {
+                continue;
+            }
+
+            DronePoseSample previous = buffer[i - 1];
+            float span = Mathf.Max(1e-4f, next.time - previous.time);
+            float t = Mathf.Clamp01((targetTime - previous.time) / span);
+            return LerpDronePose(previous, next, t);
+        }
+
+        return buffer[buffer.Count - 1];
+    }
+
+    static DronePoseSample LerpDronePose(DronePoseSample a, DronePoseSample b, float t)
+    {
+        return new DronePoseSample
+        {
+            time = Mathf.Lerp(a.time, b.time, t),
+            position = Vector3.Lerp(a.position, b.position, t),
+            yawDeg = Mathf.LerpAngle(a.yawDeg, b.yawDeg, t)
+        };
+    }
+
+    static LocomotionCommand LerpCommand(LocomotionCommand a, LocomotionCommand b, float t)
+    {
+        return new LocomotionCommand
+        {
+            rawWorldVelocity = Vector3.Lerp(a.rawWorldVelocity, b.rawWorldVelocity, t),
+            directWorldVelocity = Vector3.Lerp(a.directWorldVelocity, b.directWorldVelocity, t),
+            predictionWorldVelocity = Vector3.Lerp(a.predictionWorldVelocity, b.predictionWorldVelocity, t),
+            rawYawRateDeg = Mathf.Lerp(a.rawYawRateDeg, b.rawYawRateDeg, t),
+            directYawRateDeg = Mathf.Lerp(a.directYawRateDeg, b.directYawRateDeg, t),
+            predictionYawRateDeg = Mathf.Lerp(a.predictionYawRateDeg, b.predictionYawRateDeg, t),
+            translationPredictionWindow = Mathf.Lerp(a.translationPredictionWindow, b.translationPredictionWindow, t),
+            yawPredictionWindow = Mathf.Lerp(a.yawPredictionWindow, b.yawPredictionWindow, t),
+            hasInput = t < 0.5f ? a.hasInput : b.hasInput
+        };
+    }
+
+    static bool UsesDelayedRigInput(GhostVisualizationMode mode)
+    {
+        return mode != GhostVisualizationMode.RealTimeDroneBody;
+    }
+
+    static bool ShowsStateGhost(GhostVisualizationMode mode)
+    {
+        return ShowsRealTimeStateGhost(mode) || ShowsPredictiveStateGhost(mode);
+    }
+
+    static bool ShowsRealTimeStateGhost(GhostVisualizationMode mode)
+    {
+        return mode == GhostVisualizationMode.DelayedWithRealTimeGhost;
+    }
+
+    static bool ShowsPredictiveStateGhost(GhostVisualizationMode mode)
+    {
+        return mode == GhostVisualizationMode.DelayedWithPredictiveGhost;
+    }
+
+    void SyncVisualizationModeDebugState()
+    {
+        activeVisualizationMode = visualizationMode;
+    }
+
     void CacheInitialTargetPose()
     {
         if (targetRig == null)
@@ -418,19 +996,43 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         if (targetRig == null || head == null)
         {
             centerHeadLocal = Vector3.zero;
+            hasCenterBodyAnchor = false;
             return;
         }
 
         centerHeadLocal = targetRig.InverseTransformPoint(head.position);
+        hasCenterBodyAnchor = false;
+        hasNeutralBodyRelativeHeadYaw = false;
+
+        if (planarReferenceMode == PlanarReferenceMode.BodyAnchor
+            && TryGetBodyAnchorLocalPose(out Pose bodyAnchorLocalPose))
+        {
+            Vector3 bodyReferencedHeadOffset = ComputeBodyReferencedOffsetLocal(
+                centerHeadLocal,
+                bodyAnchorLocalPose,
+                out bool usesYaw,
+                out _);
+
+            neutralBodyLocalHeadOffset = bodyReferencedHeadOffset;
+            hasCenterBodyAnchor = true;
+            centerBodyAnchorUsesYaw = usesYaw;
+            hasNeutralBodyRelativeHeadYaw = TryComputeBodyRelativeHeadYawDeg(
+                bodyAnchorLocalPose,
+                targetRig.InverseTransformDirection(head.forward),
+                out neutralBodyRelativeHeadYawDeg);
+        }
     }
 
     void ResetMotionState()
     {
         smoothedPlanarVelocityLocal = Vector3.zero;
-        rigPositionVelocity = Vector3.zero;
-        rigYawVelocity = 0f;
-        hasLastMotionTrailDirection = false;
+        rigMovementBlocked = false;
+        rigMovementBlockedBy = string.Empty;
+        stateGhostMovementBlocked = false;
+        stateGhostMovementBlockedBy = string.Empty;
         hasVisualGhostPose = false;
+        hasRealTimeDronePose = false;
+        ResetInputToRigDelayState();
         ResetPredictionEstimatorState();
     }
 
@@ -499,6 +1101,19 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         }
     }
 
+    void MigrateLegacyInputToRigDelay()
+    {
+        if (legacyCameraMotionDelayMigrated || legacyCameraMotionDelaySeconds < 0f)
+        {
+            return;
+        }
+
+        enableInputToRigDelay = legacyEnableCameraMotionDelay;
+        inputToRigDelayMilliseconds = Mathf.Max(0, Mathf.RoundToInt(legacyCameraMotionDelaySeconds * 1000f));
+        legacyCameraMotionDelaySeconds = -1f;
+        legacyCameraMotionDelayMigrated = true;
+    }
+
     void WarnAboutConflicts()
     {
         if (warnedSetup)
@@ -508,26 +1123,200 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         warnedSetup = true;
 
-        HeadOffsetLocomotion legacy = GetComponent<HeadOffsetLocomotion>();
-        if (legacy != null && legacy.enabled)
+        if (droneBodyAvatar != null && targetRig != null && droneBodyAvatar.IsChildOf(targetRig))
         {
             Debug.LogWarning(
-                "[PredictiveGhostAvatarLocomotion] HeadOffsetLocomotion is still enabled on the same object. Disable it to avoid two locomotion scripts fighting each other.",
-                this);
+                "[PredictiveGhostAvatarLocomotion] Drone body avatar should live outside the XR rig hierarchy. The script keeps it synchronized with the rig explicitly.",
+                droneBodyAvatar);
+        }
+    }
+
+    Vector3 ComputeCenterOffsetLocal(Vector3 headLocalPos)
+    {
+        debugUsingInitialHeadReferenceFallback = planarReferenceMode == PlanarReferenceMode.InitialHeadPosition;
+
+        if (planarReferenceMode == PlanarReferenceMode.BodyAnchor)
+        {
+            if (TryGetBodyAnchorLocalPose(out Pose bodyAnchorLocalPose))
+            {
+                debugUsingInitialHeadReferenceFallback = false;
+                debugHasBodyAnchor = true;
+                debugPlanarSignalPointLocal = headLocalPos;
+                debugPlanarSignalAnchorLocal = bodyAnchorLocalPose.position;
+
+                Vector3 bodyReferencedHeadOffset = ComputeBodyReferencedOffsetLocal(
+                    headLocalPos,
+                    bodyAnchorLocalPose,
+                    out bool usesYaw,
+                    out Quaternion bodyYawLocal);
+
+                debugBodyAnchorUsesYaw = usesYaw;
+                debugBodyLocalHeadOffset = bodyReferencedHeadOffset;
+
+                if (!hasCenterBodyAnchor || centerBodyAnchorUsesYaw != usesYaw)
+                {
+                    neutralBodyLocalHeadOffset = bodyReferencedHeadOffset;
+                    hasCenterBodyAnchor = true;
+                    centerBodyAnchorUsesYaw = usesYaw;
+                    hasNeutralBodyRelativeHeadYaw = TryComputeBodyRelativeHeadYawDeg(
+                        bodyAnchorLocalPose,
+                        targetRig.InverseTransformDirection(head.forward),
+                        out neutralBodyRelativeHeadYawDeg);
+                }
+
+                Vector3 bodyReferencedDelta = bodyReferencedHeadOffset - neutralBodyLocalHeadOffset;
+                bodyReferencedDelta.y = 0f;
+                debugBodyLocalMoveOffset = bodyReferencedDelta;
+
+                if (usesYaw)
+                {
+                    bodyReferencedDelta = bodyYawLocal * bodyReferencedDelta;
+                    bodyReferencedDelta.y = 0f;
+                }
+
+                return bodyReferencedDelta;
+            }
+
+            debugHasBodyAnchor = false;
+            debugBodyAnchorUsesYaw = false;
+            debugBodyLocalHeadOffset = Vector3.zero;
+            debugBodyLocalMoveOffset = Vector3.zero;
+            debugPlanarSignalPointLocal = Vector3.zero;
+            debugPlanarSignalAnchorLocal = Vector3.zero;
+
+            if (!fallbackToInitialHeadReference)
+            {
+                return Vector3.zero;
+            }
+
+            debugUsingInitialHeadReferenceFallback = true;
         }
 
-        if (ghostAvatar != null && targetRig != null && ghostAvatar.IsChildOf(targetRig))
+        return headLocalPos - centerHeadLocal;
+    }
+
+    bool TryGetBodyAnchorLocalPose(out Pose bodyAnchorLocalPose)
+    {
+        bodyAnchorLocalPose = default;
+
+        if (planarReferenceMode != PlanarReferenceMode.BodyAnchor)
         {
-            Debug.LogWarning(
-                "[PredictiveGhostAvatarLocomotion] Ghost avatar should live outside the XR rig hierarchy. If it is a child of the rig, the predicted separation will collapse.",
-                ghostAvatar);
+            return false;
         }
+
+        ResolveBodyAnchorProvider();
+        return bodyAnchorProvider != null && bodyAnchorProvider.TryGetAnchorLocalPose(targetRig, out bodyAnchorLocalPose);
+    }
+
+    void ResolveBodyAnchorProvider()
+    {
+        if (bodyAnchorProvider != null || planarReferenceMode != PlanarReferenceMode.BodyAnchor)
+        {
+            return;
+        }
+
+        bodyAnchorProvider = GetComponent<BodyAnchorProvider>();
+        if (bodyAnchorProvider == null && autoCreateBodyAnchorProvider)
+        {
+            bodyAnchorProvider = gameObject.AddComponent<BodyAnchorProvider>();
+        }
+
+        if (bodyAnchorProvider != null)
+        {
+            bodyAnchorProvider.source = BodyAnchorProvider.AnchorSource.LeftController;
+            if (bodyAnchorProvider.target == null)
+            {
+                bodyAnchorProvider.target = targetRig != null ? targetRig : transform;
+            }
+        }
+    }
+
+    Vector3 ComputeBodyReferencedOffsetLocal(
+        Vector3 signalLocalPos,
+        Pose bodyAnchorLocalPose,
+        out bool usedBodyYaw,
+        out Quaternion bodyYawLocal)
+    {
+        Vector3 headRelativeToBodyLocal = signalLocalPos - bodyAnchorLocalPose.position;
+        headRelativeToBodyLocal.y = 0f;
+        usedBodyYaw = false;
+        bodyYawLocal = Quaternion.identity;
+
+        if (normalizePlanarOffsetByBodyYaw && TryGetBodyYawLocal(bodyAnchorLocalPose, out bodyYawLocal))
+        {
+            headRelativeToBodyLocal = Quaternion.Inverse(bodyYawLocal) * headRelativeToBodyLocal;
+            usedBodyYaw = true;
+        }
+
+        headRelativeToBodyLocal.y = 0f;
+        return headRelativeToBodyLocal;
+    }
+
+    Vector3 GetControlHeadForwardLocal()
+    {
+        debugBodyRelativeHeadYawDeg = 0f;
+        debugBodyRelativeHeadYawDeltaDeg = 0f;
+
+        Vector3 headForwardLocal = targetRig.InverseTransformDirection(head.forward);
+        if (headForwardLocal.sqrMagnitude <= 1e-8f)
+        {
+            return Vector3.forward;
+        }
+
+        headForwardLocal.Normalize();
+
+        if (useBodyRelativeHeadYaw &&
+            TryGetBodyAnchorLocalPose(out Pose bodyAnchorLocalPose) &&
+            TryComputeBodyRelativeHeadYawDeg(bodyAnchorLocalPose, headForwardLocal, out float bodyRelativeHeadYawDeg))
+        {
+            if (!hasNeutralBodyRelativeHeadYaw)
+            {
+                neutralBodyRelativeHeadYawDeg = bodyRelativeHeadYawDeg;
+                hasNeutralBodyRelativeHeadYaw = true;
+            }
+
+            float yawDeltaRad = Mathf.DeltaAngle(neutralBodyRelativeHeadYawDeg, bodyRelativeHeadYawDeg) * Mathf.Deg2Rad;
+            debugBodyRelativeHeadYawDeg = bodyRelativeHeadYawDeg;
+            debugBodyRelativeHeadYawDeltaDeg = yawDeltaRad * Mathf.Rad2Deg;
+
+            float pitchY = Mathf.Clamp(headForwardLocal.y, -0.9999f, 0.9999f);
+            float planarMagnitude = Mathf.Sqrt(Mathf.Max(0f, 1f - pitchY * pitchY));
+            headForwardLocal = new Vector3(
+                Mathf.Sin(yawDeltaRad) * planarMagnitude,
+                pitchY,
+                Mathf.Cos(yawDeltaRad) * planarMagnitude);
+        }
+
+        return headForwardLocal.sqrMagnitude > 1e-8f ? headForwardLocal.normalized : Vector3.forward;
+    }
+
+    bool TryComputeBodyRelativeHeadYawDeg(
+        Pose bodyAnchorLocalPose,
+        Vector3 headForwardLocal,
+        out float bodyRelativeHeadYawDeg)
+    {
+        bodyRelativeHeadYawDeg = 0f;
+
+        if (!useBodyRelativeHeadYaw || !TryGetBodyYawLocal(bodyAnchorLocalPose, out Quaternion bodyYawLocal))
+        {
+            return false;
+        }
+
+        Vector3 bodyForwardLocal = bodyYawLocal * Vector3.forward;
+        if (!TryGetPlanarYawDeg(bodyForwardLocal, out float bodyYawDeg) ||
+            !TryGetPlanarYawDeg(headForwardLocal, out float headYawDeg))
+        {
+            return false;
+        }
+
+        bodyRelativeHeadYawDeg = Mathf.DeltaAngle(bodyYawDeg, headYawDeg);
+        return true;
     }
 
     LocomotionCommand SampleCommand(float dt)
     {
         Vector3 headLocalPos = targetRig.InverseTransformPoint(head.position);
-        Vector3 centerOffsetLocal = headLocalPos - centerHeadLocal;
+        Vector3 centerOffsetLocal = ComputeCenterOffsetLocal(headLocalPos);
         Vector3 planarOffsetLocal = new Vector3(centerOffsetLocal.x, 0f, centerOffsetLocal.z);
         currentCenterOffsetLocal = centerOffsetLocal;
 
@@ -538,7 +1327,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         float planarLerp = 1f - Mathf.Exp(-Mathf.Max(0f, planarSmoothing) * dt);
         smoothedPlanarVelocityLocal = Vector3.Lerp(smoothedPlanarVelocityLocal, rawPlanarVelocityLocal, planarLerp);
 
-        Vector3 headForwardLocal = targetRig.InverseTransformDirection(head.forward).normalized;
+        Vector3 headForwardLocal = GetControlHeadForwardLocal();
         Vector3 planarVelocityForPrediction = useSmoothedPlanarVelocityForPrediction
             ? smoothedPlanarVelocityLocal
             : rawPlanarVelocityLocal;
@@ -556,6 +1345,16 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         }
         currentHeadPitchDeg = ComputeHeadPitchDeg(headForwardLocal);
         currentVerticalCommand = verticalCommand;
+
+        Vector2 directPlanarCommand = horizontalSpeed > 1e-6f
+            ? new Vector2(smoothedPlanarVelocityLocal.x, smoothedPlanarVelocityLocal.z) / horizontalSpeed
+            : Vector2.zero;
+        float directYawRateDeg = ComputeYawRate(headForwardLocal, directPlanarCommand) * Mathf.Rad2Deg;
+        Vector3 directLocalVelocity = new Vector3(
+            smoothedPlanarVelocityLocal.x,
+            verticalCommand,
+            smoothedPlanarVelocityLocal.z);
+        Vector3 directWorldVelocity = targetRig.TransformDirection(directLocalVelocity);
 
         Vector3 predictionLocalVelocity = new Vector3(
             planarVelocityForPrediction.x,
@@ -591,8 +1390,10 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         return new LocomotionCommand
         {
             rawWorldVelocity = rawWorldPredictionVelocity,
+            directWorldVelocity = directWorldVelocity,
             predictionWorldVelocity = filteredWorldPredictionVelocity,
             rawYawRateDeg = rawYawRateDeg,
+            directYawRateDeg = directYawRateDeg,
             predictionYawRateDeg = filteredYawPredictionRateDeg,
             translationPredictionWindow = currentTranslationPredictionWindow,
             yawPredictionWindow = currentYawPredictionWindow,
@@ -783,7 +1584,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             Mathf.Max(0f, maxPredictedYawAccelerationDeg));
     }
 
-    void UpdateGhostPose(LocomotionCommand command, float dt)
+    void UpdatePredictiveStateGhostPose(LocomotionCommand command, float dt)
     {
         if (!hasGhostPose)
         {
@@ -792,32 +1593,31 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         if (!command.hasInput)
         {
+            ghostPosition = ResolveStateGhostReachablePosition(realTimeDronePosition, realTimeDronePosition);
+            ghostYawDeg = realTimeDroneYawDeg;
             UpdateVisualGhostPose(dt);
-            currentGhostOffsetLocal = targetRig.InverseTransformDirection(ghostPosition - targetRig.position);
-            SyncGhostTransform();
+            stateGhostOffsetLocal = targetRig != null
+                ? targetRig.InverseTransformDirection(ghostPosition - targetRig.position)
+                : Vector3.zero;
+            SyncStateGhostTransform();
             return;
         }
 
-        Vector3 predictedPosition = targetRig.position
-            + command.predictionWorldVelocity * Mathf.Max(0f, command.translationPredictionWindow);
-        Vector3 predictionOffset = predictedPosition - targetRig.position;
-
-        float maxLead = Mathf.Max(0.01f, maxPredictionDistance);
-        if (predictionOffset.sqrMagnitude > maxLead * maxLead)
-        {
-            predictedPosition = targetRig.position + predictionOffset.normalized * maxLead;
-        }
-
-        predictedPosition = ClampPosition(predictedPosition, positionLimits);
-        float predictedYaw = targetRig.eulerAngles.y
+        Vector3 predictedPosition = ResolvePredictiveGhostReachablePosition(
+            realTimeDronePosition,
+            command.predictionWorldVelocity,
+            Mathf.Max(0f, command.translationPredictionWindow));
+        float predictedYaw = realTimeDroneYawDeg
             + command.predictionYawRateDeg * Mathf.Max(0f, command.yawPredictionWindow);
 
         ghostPosition = predictedPosition;
         ghostYawDeg = predictedYaw;
         UpdateVisualGhostPose(dt);
 
-        currentGhostOffsetLocal = targetRig.InverseTransformDirection(ghostPosition - targetRig.position);
-        SyncGhostTransform();
+        stateGhostOffsetLocal = targetRig != null
+            ? targetRig.InverseTransformDirection(ghostPosition - targetRig.position)
+            : Vector3.zero;
+        SyncStateGhostTransform();
     }
 
     void UpdateVisualGhostPose(float dt)
@@ -836,372 +1636,244 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         visualGhostYawDeg = Mathf.LerpAngle(visualGhostYawDeg, ghostYawDeg, yawT);
     }
 
-    void FollowGhost(float dt)
+    Vector3 ResolveStateGhostReachablePosition(Vector3 currentPosition, Vector3 requestedPosition)
     {
-        Vector3 nextPosition = Vector3.SmoothDamp(
+        if (!constrainStateGhostToReachableSpace || !enableSoftCollisionBlocking || targetRig == null)
+        {
+            return requestedPosition;
+        }
+
+        Vector3 constrainedPosition = ResolveSoftBlockedPosition(
+            currentPosition,
+            requestedPosition,
+            Mathf.Max(0.01f, collisionProbeRadius),
+            out bool blocked,
+            out string blockedBy);
+
+        if (blocked)
+        {
+            stateGhostMovementBlocked = true;
+            stateGhostMovementBlockedBy = blockedBy;
+        }
+
+        return constrainedPosition;
+    }
+
+    Vector3 ResolvePredictiveGhostReachablePosition(Vector3 startPosition, Vector3 worldVelocity, float predictionWindow)
+    {
+        float horizon = Mathf.Max(0f, predictionWindow);
+        Vector3 predictionDelta = worldVelocity * horizon;
+        float maxLead = Mathf.Max(0.01f, maxPredictionDistance);
+        if (predictionDelta.sqrMagnitude > maxLead * maxLead)
+        {
+            predictionDelta = predictionDelta.normalized * maxLead;
+        }
+
+        if (predictionDelta.sqrMagnitude <= 1e-8f)
+        {
+            return ResolveStateGhostReachablePosition(startPosition, startPosition);
+        }
+
+        if (!constrainStateGhostToReachableSpace || !enableSoftCollisionBlocking || targetRig == null)
+        {
+            return ClampPosition(startPosition + predictionDelta, positionLimits);
+        }
+
+        Vector3 safeStart = ResolveStateGhostReachablePosition(startPosition, startPosition);
+        Vector3 targetPosition = ClampPosition(safeStart + predictionDelta, positionLimits);
+        float travelDistance = Vector3.Distance(safeStart, targetPosition);
+        float stepLength = Mathf.Max(0.05f, Mathf.Max(0.01f, collisionProbeRadius) * 0.5f);
+        int steps = Mathf.Clamp(
+            Mathf.CeilToInt(travelDistance / stepLength),
+            1,
+            Mathf.Max(1, predictiveGhostCollisionSteps));
+
+        Vector3 position = safeStart;
+        for (int i = 1; i <= steps; i++)
+        {
+            Vector3 requestedStepPosition = Vector3.Lerp(safeStart, targetPosition, i / (float)steps);
+            Vector3 constrainedStepPosition = ResolveStateGhostReachablePosition(position, requestedStepPosition);
+            Vector3 requestedStepDelta = requestedStepPosition - position;
+            Vector3 actualStepDelta = constrainedStepPosition - position;
+
+            position = constrainedStepPosition;
+            if (requestedStepDelta.sqrMagnitude > 1e-7f
+                && actualStepDelta.sqrMagnitude <= 1e-8f)
+            {
+                break;
+            }
+        }
+
+        return position;
+    }
+
+    Vector3 ResolveSoftBlockedRigPosition(Vector3 requestedRigPosition)
+    {
+        rigMovementBlocked = false;
+        rigMovementBlockedBy = string.Empty;
+
+        if (!enableSoftCollisionBlocking || targetRig == null)
+        {
+            return requestedRigPosition;
+        }
+
+        Vector3 constrainedPosition = ResolveSoftBlockedPosition(
             targetRig.position,
-            ghostPosition,
-            ref rigPositionVelocity,
-            Mathf.Max(0.0001f, positionSmoothTime),
-            ResolveSmoothDampMaxSpeed(maxCatchUpSpeed),
-            dt);
+            requestedRigPosition,
+            Mathf.Max(0.01f, collisionProbeRadius),
+            out bool blocked,
+            out string blockedBy);
 
-        float nextYaw = Mathf.SmoothDampAngle(
-            targetRig.eulerAngles.y,
-            ghostYawDeg,
-            ref rigYawVelocity,
-            Mathf.Max(0.0001f, yawSmoothTime),
-            ResolveSmoothDampMaxSpeed(maxYawCatchUpSpeedDeg),
-            dt);
+        if (blocked)
+        {
+            rigMovementBlocked = true;
+            rigMovementBlockedBy = blockedBy;
+        }
 
-        targetRig.SetPositionAndRotation(
-            ClampPosition(nextPosition, positionLimits),
-            Quaternion.Euler(0f, nextYaw, 0f));
+        return constrainedPosition;
     }
 
-    void SyncGhostTransform()
+    Vector3 ResolveSoftBlockedPosition(Vector3 currentRigPosition, Vector3 requestedRigPosition, float radius, out bool blocked, out string blockedBy)
     {
-        if (ghostAvatar == null)
+        blocked = false;
+        blockedBy = string.Empty;
+
+        if (!enableSoftCollisionBlocking || targetRig == null)
         {
-            return;
+            return requestedRigPosition;
         }
 
-        ghostAvatar.SetPositionAndRotation(
-            visualGhostPosition,
-            Quaternion.Euler(0f, visualGhostYawDeg, 0f));
-    }
+        Vector3 requestedDelta = requestedRigPosition - currentRigPosition;
+        float requestedDistance = requestedDelta.magnitude;
 
-    void UpdatePredictionVisualCues(LocomotionCommand command)
-    {
-        UpdatePredictionPathPreview();
-        UpdatePredictionMotionTrail(command);
-    }
+        radius = Mathf.Max(0.01f, radius);
+        float skin = Mathf.Max(0f, collisionSkinWidth);
 
-    void UpdatePredictionPathPreview()
-    {
-        if (!showPredictionPath || targetRig == null || !hasGhostPose)
+        Vector3 physicsConstrainedPosition = requestedRigPosition;
+        if (requestedDistance > 1e-5f)
         {
-            HidePredictionPathPreview();
-            return;
-        }
+            Vector3 direction = requestedDelta / requestedDistance;
+            Vector3 probeStart = GetCollisionProbePositionForRigPosition(currentRigPosition);
+            float castDistance = requestedDistance + skin;
 
-        float distance = Vector3.Distance(targetRig.position, visualGhostPosition);
-        bool canShow = distance >= Mathf.Max(0f, predictionPathMinDistance)
-            && (!hidePathWhenConverged || !isConverged);
-        if (!canShow)
-        {
-            HidePredictionPathPreview();
-            return;
-        }
+            int hitCount = Physics.SphereCastNonAlloc(
+                probeStart,
+                radius,
+                direction,
+                rigCollisionHits,
+                castDistance,
+                collisionBlockLayers,
+                collisionQueryTriggerInteraction);
 
-        EnsurePredictionPathVisual();
-        if (predictionPathRoot == null || predictionPathLine == null)
-        {
-            return;
-        }
+            RaycastHit nearestHit = default;
+            bool hasHit = false;
+            float nearestDistance = float.PositiveInfinity;
 
-        predictionPathRoot.gameObject.SetActive(true);
-        predictionPathLine.enabled = true;
-        predictionPathVisible = true;
-
-        int pointCount = Mathf.Max(2, predictionPathSegmentCount);
-        if (predictionPathLine.positionCount != pointCount)
-        {
-            predictionPathLine.positionCount = pointCount;
-        }
-
-        predictionPathLine.startWidth = Mathf.Max(0.001f, predictionPathWidth);
-        predictionPathLine.endWidth = Mathf.Max(0.001f, predictionPathWidth * 0.65f);
-        predictionPathLine.startColor = predictionPathStartColor;
-        predictionPathLine.endColor = predictionPathEndColor;
-
-        Vector3 start = targetRig.position + Vector3.up * predictionPathHeightOffset;
-        Vector3 end = visualGhostPosition + Vector3.up * predictionPathHeightOffset;
-        Vector3 control = (start + end) * 0.5f + Vector3.up * Mathf.Max(0f, predictionPathArcHeight);
-
-        for (int i = 0; i < pointCount; i++)
-        {
-            float t = pointCount == 1 ? 1f : i / (float)(pointCount - 1);
-            predictionPathLine.SetPosition(i, QuadraticBezier(start, control, end, t));
-        }
-    }
-
-    void EnsurePredictionPathVisual()
-    {
-        if (predictionPathRoot != null && predictionPathLine != null)
-        {
-            return;
-        }
-
-        DestroyPredictionPathVisual();
-
-        GameObject root = new GameObject("__PredictionPathPreview");
-        root.transform.SetParent(transform, false);
-        predictionPathRoot = root.transform;
-
-        predictionPathMaterial = CreateTransparentTrailMaterial("__PredictionPathPreviewMat");
-        predictionPathLine = root.AddComponent<LineRenderer>();
-        predictionPathLine.useWorldSpace = true;
-        predictionPathLine.alignment = LineAlignment.View;
-        predictionPathLine.textureMode = LineTextureMode.Stretch;
-        predictionPathLine.numCapVertices = 4;
-        predictionPathLine.numCornerVertices = 4;
-        predictionPathLine.shadowCastingMode = ShadowCastingMode.Off;
-        predictionPathLine.receiveShadows = false;
-        predictionPathLine.material = predictionPathMaterial;
-        predictionPathLine.enabled = false;
-        root.SetActive(false);
-    }
-
-    void HidePredictionPathPreview()
-    {
-        if (predictionPathLine != null)
-        {
-            predictionPathLine.enabled = false;
-        }
-
-        if (predictionPathRoot != null)
-        {
-            predictionPathRoot.gameObject.SetActive(false);
-        }
-
-        predictionPathVisible = false;
-    }
-
-    void DestroyPredictionPathVisual()
-    {
-        if (predictionPathRoot != null)
-        {
-            Destroy(predictionPathRoot.gameObject);
-            predictionPathRoot = null;
-        }
-
-        if (predictionPathMaterial != null)
-        {
-            Destroy(predictionPathMaterial);
-            predictionPathMaterial = null;
-        }
-
-        predictionPathLine = null;
-    }
-
-    void UpdatePredictionMotionTrail(LocomotionCommand command)
-    {
-        if (!showPredictionTrail || targetRig == null || !hasGhostPose || !command.hasInput)
-        {
-            HidePredictionMotionTrail(clearTrail: true);
-            return;
-        }
-
-        EnsurePredictionMotionTrailVisual();
-
-        if (motionTrailRoot == null || motionTrail == null)
-        {
-            return;
-        }
-
-        motionTrailRoot.position = visualGhostPosition + Vector3.up * motionTrailHeightOffset;
-        motionTrail.time = Mathf.Max(0.01f, motionTrailTime);
-        motionTrail.minVertexDistance = Mathf.Max(0.001f, motionTrailMinVertexDistance);
-        motionTrail.startWidth = Mathf.Max(0.001f, motionTrailHeadWidth);
-        motionTrail.endWidth = Mathf.Max(0.001f, motionTrailTailWidth);
-
-        float distance = Vector3.Distance(targetRig.position, visualGhostPosition);
-        bool canEmit = distance >= Mathf.Max(0f, minTrailDistance)
-            && (!hideTrailWhenConverged || !isConverged);
-
-        Vector3 planarDirection = new Vector3(command.predictionWorldVelocity.x, 0f, command.predictionWorldVelocity.z);
-        if (canEmit && planarDirection.sqrMagnitude > 1e-4f)
-        {
-            planarDirection.Normalize();
-            if (clearMotionTrailOnDirectionChange
-                && hasLastMotionTrailDirection
-                && Vector3.Angle(lastMotionTrailDirectionWorld, planarDirection) > Mathf.Max(0f, motionTrailClearAngleDeg))
+            for (int i = 0; i < hitCount; i++)
             {
-                motionTrail.Clear();
+                RaycastHit hit = rigCollisionHits[i];
+                if (ShouldIgnoreRigCollisionHit(hit))
+                {
+                    continue;
+                }
+
+                if (hit.distance < nearestDistance)
+                {
+                    nearestDistance = hit.distance;
+                    nearestHit = hit;
+                    hasHit = true;
+                }
             }
 
-            lastMotionTrailDirectionWorld = planarDirection;
-            hasLastMotionTrailDirection = true;
-        }
-        else if (!canEmit)
-        {
-            hasLastMotionTrailDirection = false;
-        }
-
-        motionTrailRoot.gameObject.SetActive(true);
-        motionTrail.emitting = canEmit;
-        motionTrailEmitting = canEmit;
-    }
-
-    void EnsurePredictionMotionTrailVisual()
-    {
-        if (motionTrailRoot != null && motionTrail != null)
-        {
-            return;
-        }
-
-        DestroyPredictionMotionTrailVisual();
-
-        GameObject root = new GameObject("__PredictionMotionTrail");
-        root.transform.SetParent(transform, false);
-        motionTrailRoot = root.transform;
-
-        motionTrailMaterial = CreateTransparentTrailMaterial("__PredictionMotionTrailMat");
-        motionTrailGradient = BuildMotionTrailGradient();
-
-        motionTrail = root.AddComponent<TrailRenderer>();
-        motionTrail.autodestruct = false;
-        motionTrail.emitting = false;
-        motionTrail.time = Mathf.Max(0.01f, motionTrailTime);
-        motionTrail.minVertexDistance = Mathf.Max(0.001f, motionTrailMinVertexDistance);
-        motionTrail.startWidth = Mathf.Max(0.001f, motionTrailHeadWidth);
-        motionTrail.endWidth = Mathf.Max(0.001f, motionTrailTailWidth);
-        motionTrail.alignment = LineAlignment.View;
-        motionTrail.textureMode = LineTextureMode.Stretch;
-        motionTrail.numCapVertices = 4;
-        motionTrail.numCornerVertices = 4;
-        motionTrail.shadowCastingMode = ShadowCastingMode.Off;
-        motionTrail.receiveShadows = false;
-        motionTrail.material = motionTrailMaterial;
-        motionTrail.colorGradient = motionTrailGradient;
-        motionTrail.Clear();
-    }
-
-    void HidePredictionMotionTrail(bool clearTrail)
-    {
-        if (motionTrail != null)
-        {
-            motionTrail.emitting = false;
-            if (clearTrail)
+            if (hasHit)
             {
-                motionTrail.Clear();
+                float allowedDistance = Mathf.Max(0f, nearestDistance - skin);
+                if (allowedDistance < requestedDistance)
+                {
+                    blocked = true;
+                    blockedBy = nearestHit.collider != null ? nearestHit.collider.name : "Unknown collider";
+                    physicsConstrainedPosition = currentRigPosition + direction * allowedDistance;
+                }
             }
         }
 
-        if (motionTrailRoot != null && clearTrail)
-        {
-            motionTrailRoot.gameObject.SetActive(false);
-        }
-
-        hasLastMotionTrailDirection = false;
-        motionTrailEmitting = false;
+        return ResolveTubeBoundaryConstrainedRigPosition(physicsConstrainedPosition, radius, ref blocked, ref blockedBy);
     }
 
-    void DestroyPredictionMotionTrailVisual()
+    Vector3 ResolveTubeBoundaryConstrainedRigPosition(Vector3 requestedRigPosition, float probeRadius, ref bool blocked, ref string blockedBy)
     {
-        if (motionTrailRoot != null)
+        RefreshTubeBoundaryReference();
+        if (tubeBoundary == null)
         {
-            Destroy(motionTrailRoot.gameObject);
-            motionTrailRoot = null;
+            return requestedRigPosition;
         }
 
-        if (motionTrailMaterial != null)
+        Vector3 requestedProbePosition = GetCollisionProbePositionForRigPosition(requestedRigPosition);
+        if (!tubeBoundary.TryConstrainInside(requestedProbePosition, probeRadius, out Vector3 constrainedProbePosition))
         {
-            Destroy(motionTrailMaterial);
-            motionTrailMaterial = null;
+            return requestedRigPosition;
         }
 
-        motionTrail = null;
+        blocked = true;
+        blockedBy = tubeBoundary.hazardLabel;
+        return requestedRigPosition + (constrainedProbePosition - requestedProbePosition);
     }
 
-    Gradient BuildMotionTrailGradient()
+    void RefreshTubeBoundaryReference()
     {
-        Gradient gradient = new Gradient();
-        gradient.SetKeys(
-            new[]
-            {
-                new GradientColorKey(motionTrailTailColor, 0f),
-                new GradientColorKey(motionTrailHeadColor, 1f)
-            },
-            new[]
-            {
-                new GradientAlphaKey(motionTrailTailColor.a, 0f),
-                new GradientAlphaKey(motionTrailHeadColor.a, 1f)
-            });
-        return gradient;
-    }
-
-    static Vector3 QuadraticBezier(Vector3 start, Vector3 control, Vector3 end, float t)
-    {
-        float u = 1f - t;
-        return u * u * start + 2f * u * t * control + t * t * end;
-    }
-
-    static Material CreateTransparentTrailMaterial(string materialName)
-    {
-        Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
-        if (shader == null)
-        {
-            shader = Shader.Find("Unlit/Color");
-        }
-        if (shader == null)
-        {
-            shader = Shader.Find("Standard");
-        }
-
-        Material material = new Material(shader)
-        {
-            name = materialName,
-            hideFlags = HideFlags.DontSave
-        };
-
-        Color white = Color.white;
-        if (material.HasProperty("_BaseColor"))
-        {
-            material.SetColor("_BaseColor", white);
-        }
-        if (material.HasProperty("_Color"))
-        {
-            material.SetColor("_Color", white);
-        }
-
-        ConfigureTransparentTrailMaterial(material);
-        return material;
-    }
-
-    static void ConfigureTransparentTrailMaterial(Material material)
-    {
-        if (material == null)
+        if (!autoFindTubeBoundary || tubeBoundary != null)
         {
             return;
         }
 
-        if (material.HasProperty("_Surface"))
+        tubeBoundary = FindFirstObjectByType<IrairaBouTubeBoundary>();
+    }
+
+    Vector3 GetCollisionProbePositionForRigPosition(Vector3 rigPosition)
+    {
+        Transform probe = collisionProbe != null
+            ? collisionProbe
+            : useHeadAsCollisionProbe ? head : null;
+
+        if (probe == null || targetRig == null)
         {
-            material.SetFloat("_Surface", 1f);
-        }
-        if (material.HasProperty("_Blend"))
-        {
-            material.SetFloat("_Blend", 0f);
-        }
-        if (material.HasProperty("_AlphaClip"))
-        {
-            material.SetFloat("_AlphaClip", 0f);
-        }
-        if (material.HasProperty("_SrcBlend"))
-        {
-            material.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
-        }
-        if (material.HasProperty("_DstBlend"))
-        {
-            material.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
-        }
-        if (material.HasProperty("_ZWrite"))
-        {
-            material.SetInt("_ZWrite", 0);
-        }
-        if (material.HasProperty("_Mode"))
-        {
-            material.SetFloat("_Mode", 3f);
+            return rigPosition;
         }
 
-        material.SetOverrideTag("RenderType", "Transparent");
-        material.DisableKeyword("_ALPHATEST_ON");
-        material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-        material.EnableKeyword("_ALPHABLEND_ON");
-        material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
-        material.renderQueue = (int)RenderQueue.Transparent;
+        return probe.position + (rigPosition - targetRig.position);
+    }
+
+    bool ShouldIgnoreRigCollisionHit(RaycastHit hit)
+    {
+        Collider hitCollider = hit.collider;
+        if (hitCollider == null)
+        {
+            return true;
+        }
+
+        Transform hitTransform = hitCollider.transform;
+        if (targetRig != null && hitTransform.IsChildOf(targetRig))
+        {
+            return true;
+        }
+
+        if (droneBodyAvatar != null && hitTransform.IsChildOf(droneBodyAvatar))
+        {
+            return true;
+        }
+
+        if (stateGhostAvatar != null && hitTransform.IsChildOf(stateGhostAvatar))
+        {
+            return true;
+        }
+
+        Rigidbody attachedRigidbody = hitCollider.attachedRigidbody;
+        if (attachedRigidbody != null && targetRig != null && attachedRigidbody.transform.IsChildOf(targetRig))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     void UpdateConvergenceState(bool forceNotify)
@@ -1251,7 +1923,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             ? planarOffsetLocal.normalized
             : Vector3.zero;
 
-        Vector3 headForwardLocal = targetRig.InverseTransformDirection(head.forward);
+        Vector3 headForwardLocal = GetControlHeadForwardLocal();
         Vector3 headPlanarLocal = new Vector3(headForwardLocal.x, 0f, headForwardLocal.z);
         if (headPlanarLocal.sqrMagnitude > 1e-8f)
         {
@@ -1283,18 +1955,18 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         switch (orientationMode)
         {
-            case HeadOffsetLocomotion.OrientationControlMode.Static:
+            case OrientationControlMode.Static:
             {
                 float threshold = staticYawThresholdDeg * Mathf.Deg2Rad;
                 float maxRate = staticYawSpeedDeg * Mathf.Deg2Rad;
                 return Mathf.Abs(headYaw) > threshold ? maxRate * Mathf.Sign(headYaw) : 0f;
             }
-            case HeadOffsetLocomotion.OrientationControlMode.Coupled:
+            case OrientationControlMode.Coupled:
             {
                 float maxRate = coupledYawMaxSpeedDeg * Mathf.Deg2Rad;
                 return Mathf.Clamp(coupledYawGain * headYaw, -maxRate, maxRate);
             }
-            case HeadOffsetLocomotion.OrientationControlMode.Dynamic:
+            case OrientationControlMode.Dynamic:
             default:
             {
                 float gain = 0.5f;
@@ -1321,7 +1993,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         switch (orientationMode)
         {
-            case HeadOffsetLocomotion.OrientationControlMode.Static:
+            case OrientationControlMode.Static:
                 if (headPitchDeg >= staticPitchUpThresholdDeg)
                 {
                     return staticPitchUpSpeed;
@@ -1332,14 +2004,14 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
                 }
                 return 0f;
 
-            case HeadOffsetLocomotion.OrientationControlMode.Coupled:
+            case OrientationControlMode.Coupled:
             {
                 float refDeg = Mathf.Max(coupledPitchReferenceDeg, 1f);
                 float maxSpeed = coupledPitchMaxSpeed;
                 return Mathf.Clamp((headPitchDeg / refDeg) * maxSpeed, -maxSpeed, maxSpeed);
             }
 
-            case HeadOffsetLocomotion.OrientationControlMode.Dynamic:
+            case OrientationControlMode.Dynamic:
             default:
             {
                 float lambda;
@@ -1398,16 +2070,75 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
             Mathf.Clamp(position.z, -limits.z, limits.z));
     }
 
-    static float ResolveSmoothDampMaxSpeed(float value)
+    static bool TryGetBodyYawLocal(Pose bodyAnchorLocalPose, out Quaternion bodyYawLocal)
     {
-        return value <= 0f ? Mathf.Infinity : value;
+        return TryGetYawRotation(bodyAnchorLocalPose.rotation, out bodyYawLocal);
+    }
+
+    static bool TryGetYawRotation(Quaternion rotation, out Quaternion yawRotation)
+    {
+        Vector3 forward = rotation * Vector3.forward;
+        forward.y = 0f;
+
+        if (forward.sqrMagnitude <= 1e-8f)
+        {
+            Vector3 right = rotation * Vector3.right;
+            right.y = 0f;
+            if (right.sqrMagnitude <= 1e-8f)
+            {
+                yawRotation = Quaternion.identity;
+                return false;
+            }
+
+            forward = Vector3.Cross(right.normalized, Vector3.up);
+        }
+
+        yawRotation = Quaternion.LookRotation(forward.normalized, Vector3.up);
+        return true;
+    }
+
+    static bool TryGetPlanarYawDeg(Vector3 forward, out float yawDeg)
+    {
+        forward.y = 0f;
+        if (forward.sqrMagnitude <= 1e-8f)
+        {
+            yawDeg = 0f;
+            return false;
+        }
+
+        yawDeg = Mathf.Atan2(forward.x, forward.z) * Mathf.Rad2Deg;
+        return true;
+    }
+
+    interface IDelayedSample
+    {
+        float SampleTime { get; }
+    }
+
+    struct DelayedCommandSample : IDelayedSample
+    {
+        public float time;
+        public LocomotionCommand command;
+
+        public float SampleTime => time;
+    }
+
+    struct DronePoseSample : IDelayedSample
+    {
+        public float time;
+        public Vector3 position;
+        public float yawDeg;
+
+        public float SampleTime => time;
     }
 
     struct LocomotionCommand
     {
         public Vector3 rawWorldVelocity;
+        public Vector3 directWorldVelocity;
         public Vector3 predictionWorldVelocity;
         public float rawYawRateDeg;
+        public float directYawRateDeg;
         public float predictionYawRateDeg;
         public float translationPredictionWindow;
         public float yawPredictionWindow;

@@ -1,0 +1,1458 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using UnityEngine;
+
+[DefaultExecutionOrder(500)]
+[DisallowMultipleComponent]
+public class PredictiveFlyObjectiveLogger : MonoBehaviour
+{
+    [Header("Participant / Trial")]
+    [Tooltip("Set this manually in the Inspector before each participant.")]
+    public string participantId = "P001";
+    [Min(1)] public int trialNumber = 1;
+    [Tooltip("Optional human-readable condition label. Leave empty to derive it from the locomotion visualization mode.")]
+    public string conditionLabelOverride;
+
+    [Header("Output")]
+    [Tooltip("Relative paths are resolved from the Unity project root in the editor.")]
+    public string outputDirectory = "Data/PredictiveFlyObjective";
+    public bool startOnEnable;
+    public bool stopOnDisable = true;
+    [Min(0.1f)] public float flushIntervalSeconds = 2f;
+
+    [Header("Controls")]
+    public bool useKeyboardControls = true;
+    public KeyCode startLoggingKey = KeyCode.S;
+    public KeyCode stopLoggingKey = KeyCode.Q;
+    public KeyCode manualMarkerKey = KeyCode.M;
+    public bool stopOnFinish;
+
+    [Header("References")]
+    public PredictiveGhostAvatarLocomotion locomotion;
+    public Transform rigRoot;
+    public Transform head;
+    public Transform probe;
+    public Transform droneBodyAvatar;
+    public Transform stateGhostAvatar;
+    public bool autoFindReferences = true;
+
+    [Header("Sampling")]
+    [Min(1f)] public float sampleRateHz = 30f;
+    [Min(0.01f)] public float probeRadius = 0.22f;
+    [Tooltip("Contact/near-wall tolerance added to the probe radius.")]
+    [Min(0f)] public float contactTolerance = 0.025f;
+    [Tooltip("A near-miss event starts when clearance drops below this distance without contact.")]
+    [Min(0.01f)] public float nearMissDistance = 0.45f;
+    [Tooltip("Obstacle encounter tracking starts below this distance.")]
+    [Min(0.05f)] public float encounterStartDistance = 2.0f;
+    [Tooltip("Obstacle encounter tracking ends above this distance.")]
+    [Min(0.05f)] public float encounterEndDistance = 2.5f;
+    [Tooltip("Input-change rate used as a proxy for avoidance correction onset.")]
+    [Min(0.01f)] public float correctionInputRateThreshold = 0.8f;
+    [Tooltip("Drop in closing speed used as a proxy for avoidance correction onset.")]
+    [Min(0.01f)] public float correctionClosingSpeedDrop = 0.3f;
+
+    [Header("Debug")]
+    [SerializeField] bool isLogging;
+    [SerializeField] string sessionId;
+    [SerializeField] string activeParticipantId;
+    [SerializeField] string activeMode;
+    [SerializeField] string activeConditionLabel;
+    [SerializeField] string activeOutputDirectory;
+    [SerializeField] int sampleCount;
+    [SerializeField] int collisionCount;
+    [SerializeField] int nearMissCount;
+    [SerializeField] int rigBlockCount;
+    [SerializeField] int checkpointCount;
+    [SerializeField] bool finishReached;
+    [SerializeField] float pathLength;
+    [SerializeField] float minObstacleDistance = float.PositiveInfinity;
+
+    readonly List<ObstacleInfo> obstacles = new List<ObstacleInfo>();
+    readonly List<MarkerInfo> checkpoints = new List<MarkerInfo>();
+    readonly List<MarkerInfo> finishes = new List<MarkerInfo>();
+    readonly Dictionary<int, EncounterState> activeEncounters = new Dictionary<int, EncounterState>();
+    readonly List<int> encountersToEnd = new List<int>();
+    readonly HashSet<int> reachedCheckpoints = new HashSet<int>();
+    readonly HashSet<int> reachedFinishes = new HashSet<int>();
+    readonly List<string> row = new List<string>(128);
+
+    StreamWriter timeseriesWriter;
+    StreamWriter eventsWriter;
+    StreamWriter summaryWriter;
+    StreamWriter encountersWriter;
+
+    DateTime sessionStartDateTime;
+    float trialStartTime;
+    float nextSampleTime;
+    float nextFlushTime;
+    Vector3 trialStartPosition;
+    Vector3 lastRemotePosition;
+    float lastRemoteYawDeg;
+    float lastRemoteSampleTime;
+    Vector3 lastBodyInput;
+    float lastBodyInputTime;
+    bool hasLastBodyInput;
+    bool hasLastRemotePose;
+    bool lastRigBlocked;
+    bool lastStateGhostBlocked;
+    string lastModeString;
+    int encounterSequence;
+    float speedSum;
+    float speedMax;
+    float nearestDistanceSum;
+    int nearestDistanceSamples;
+    float correctionTtcSum;
+    int correctionCount;
+    Vector3 neutralHeadLocalPosition;
+    float neutralPitchDeg;
+    float neutralYawDeg;
+
+    public bool IsLogging => isLogging;
+
+    void Awake()
+    {
+        ResolveReferences();
+    }
+
+    void OnEnable()
+    {
+        ResolveReferences();
+        if (startOnEnable && Application.isPlaying)
+        {
+            StartLogging();
+        }
+    }
+
+    void Update()
+    {
+        if (useKeyboardControls)
+        {
+            if (Input.GetKeyDown(startLoggingKey))
+            {
+                StartLogging();
+            }
+
+            if (Input.GetKeyDown(stopLoggingKey))
+            {
+                StopLogging(false);
+            }
+
+            if (isLogging && Input.GetKeyDown(manualMarkerKey))
+            {
+                WriteEvent("manual_marker", string.Empty, string.Empty, GetProbePosition(), float.NaN, float.NaN, "Manual marker key pressed.");
+            }
+        }
+
+        if (!isLogging)
+        {
+            return;
+        }
+
+        if (Time.time + 1e-5f >= nextSampleTime)
+        {
+            SampleAndWrite();
+            float interval = 1f / Mathf.Max(1f, sampleRateHz);
+            nextSampleTime = Mathf.Max(nextSampleTime + interval, Time.time + interval);
+        }
+
+        if (Time.unscaledTime >= nextFlushTime)
+        {
+            FlushAll();
+            nextFlushTime = Time.unscaledTime + Mathf.Max(0.1f, flushIntervalSeconds);
+        }
+    }
+
+    void OnDisable()
+    {
+        if (stopOnDisable)
+        {
+            StopLogging(false);
+        }
+    }
+
+    void OnApplicationQuit()
+    {
+        StopLogging(false);
+    }
+
+    [ContextMenu("Start Objective Logging")]
+    public void StartLogging()
+    {
+        if (isLogging)
+        {
+            return;
+        }
+
+        ResolveReferences();
+        RefreshSceneTargets();
+        CaptureNeutralHeadPose();
+        ResetTrialMetrics();
+
+        sessionStartDateTime = DateTime.Now;
+        string timestamp = sessionStartDateTime.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+        activeParticipantId = string.IsNullOrWhiteSpace(participantId) ? "NA" : participantId.Trim();
+        activeMode = GetModeString();
+        activeConditionLabel = ResolveConditionLabel(activeMode);
+        sessionId = $"{Sanitize(activeParticipantId)}_{Sanitize(activeMode)}_{timestamp}_T{trialNumber:00}";
+        activeOutputDirectory = ResolveOutputDirectory();
+        Directory.CreateDirectory(activeOutputDirectory);
+
+        timeseriesWriter = CreateWriter("objective_timeseries");
+        eventsWriter = CreateWriter("objective_events");
+        summaryWriter = CreateWriter("objective_trial_summary");
+        encountersWriter = CreateWriter("objective_obstacle_encounters");
+
+        WriteTimeseriesHeader();
+        WriteEventsHeader();
+        WriteSummaryHeader();
+        WriteEncounterHeader();
+
+        trialStartTime = Time.time;
+        nextSampleTime = Time.time;
+        nextFlushTime = Time.unscaledTime + Mathf.Max(0.1f, flushIntervalSeconds);
+        trialStartPosition = GetRemotePosition();
+        lastRemotePosition = trialStartPosition;
+        lastRemoteYawDeg = GetRemoteYawDeg();
+        lastRemoteSampleTime = Time.time;
+        lastModeString = activeMode;
+        isLogging = true;
+
+        WriteEvent("trial_start", string.Empty, string.Empty, GetProbePosition(), float.NaN, float.NaN, "Objective logging started.");
+    }
+
+    [ContextMenu("Stop Objective Logging")]
+    public void StopLoggingFromInspector()
+    {
+        StopLogging(false);
+    }
+
+    public void StopLogging(bool completed)
+    {
+        if (!isLogging)
+        {
+            return;
+        }
+
+        WriteEvent(completed ? "trial_complete" : "trial_stop", string.Empty, string.Empty, GetProbePosition(), float.NaN, float.NaN, "Objective logging stopped.");
+        EndAllActiveEncounters(false);
+        WriteTrialSummary(completed || finishReached);
+        FlushAll();
+        DisposeWriters();
+        isLogging = false;
+    }
+
+    void SampleAndWrite()
+    {
+        ResolveReferences();
+
+        string mode = GetModeString();
+        if (mode != lastModeString)
+        {
+            WriteEvent("mode_changed", mode, string.Empty, GetProbePosition(), float.NaN, float.NaN, $"Mode changed from {lastModeString}.");
+            lastModeString = mode;
+        }
+
+        float now = Time.time;
+        float elapsed = now - trialStartTime;
+        Vector3 remotePosition = GetRemotePosition();
+        float remoteYawDeg = GetRemoteYawDeg();
+        float dt = hasLastRemotePose ? Mathf.Max(1e-4f, now - lastRemoteSampleTime) : Mathf.Max(1e-4f, Time.deltaTime);
+        Vector3 remoteVelocity = hasLastRemotePose ? (remotePosition - lastRemotePosition) / dt : Vector3.zero;
+        float yawRateDeg = hasLastRemotePose ? Mathf.DeltaAngle(lastRemoteYawDeg, remoteYawDeg) / dt : 0f;
+        float speed = remoteVelocity.magnitude;
+
+        if (hasLastRemotePose)
+        {
+            pathLength += Vector3.Distance(lastRemotePosition, remotePosition);
+        }
+
+        speedSum += speed;
+        speedMax = Mathf.Max(speedMax, speed);
+
+        Vector3 probePosition = GetProbePosition();
+        Vector3 bodyInput = GetBodyInputLocal(out bool bodyAnchorAvailable, out float headPitchDeg, out float headYawDeg);
+        float bodyInputMagnitude = new Vector2(bodyInput.x, bodyInput.z).magnitude;
+        float inputChangeRate = ComputeInputChangeRate(bodyInput, now);
+
+        ObstacleSample nearest = SampleNearestObstacle(probePosition, remoteVelocity);
+        if (nearest.valid)
+        {
+            minObstacleDistance = Mathf.Min(minObstacleDistance, nearest.distance);
+            nearestDistanceSum += nearest.distance;
+            nearestDistanceSamples++;
+            UpdateObstacleEncounters(probePosition, bodyInputMagnitude, inputChangeRate);
+        }
+        else
+        {
+            EndFarEncounters(null);
+        }
+
+        UpdateBlockingEvents(probePosition);
+        UpdateMarkerEvents(probePosition);
+        WriteTimeseriesRow(
+            now,
+            elapsed,
+            mode,
+            bodyAnchorAvailable,
+            bodyInput,
+            bodyInputMagnitude,
+            inputChangeRate,
+            headPitchDeg,
+            headYawDeg,
+            remotePosition,
+            remoteYawDeg,
+            remoteVelocity,
+            speed,
+            yawRateDeg,
+            nearest);
+
+        sampleCount++;
+        hasLastRemotePose = true;
+        lastRemotePosition = remotePosition;
+        lastRemoteYawDeg = remoteYawDeg;
+        lastRemoteSampleTime = now;
+
+        if (finishReached && stopOnFinish)
+        {
+            StopLogging(true);
+        }
+    }
+
+    void ResolveReferences()
+    {
+        if (!autoFindReferences)
+        {
+            return;
+        }
+
+        if (rigRoot == null)
+        {
+            rigRoot = transform;
+        }
+
+        if (locomotion == null)
+        {
+            locomotion = GetComponent<PredictiveGhostAvatarLocomotion>();
+        }
+
+        if (locomotion == null)
+        {
+            locomotion = GetComponentInParent<PredictiveGhostAvatarLocomotion>();
+        }
+
+        if (head == null)
+        {
+            head = locomotion != null ? locomotion.head : null;
+        }
+
+        if (head == null && Camera.main != null)
+        {
+            head = Camera.main.transform;
+        }
+
+        if (probe == null)
+        {
+            probe = head != null ? head : rigRoot;
+        }
+
+        if (droneBodyAvatar == null && locomotion != null)
+        {
+            droneBodyAvatar = locomotion.droneBodyAvatar;
+        }
+
+        if (stateGhostAvatar == null && locomotion != null)
+        {
+            stateGhostAvatar = locomotion.stateGhostAvatar;
+        }
+    }
+
+    void RefreshSceneTargets()
+    {
+        obstacles.Clear();
+        checkpoints.Clear();
+        finishes.Clear();
+
+        IrairaBouHazard[] hazardObjects = FindObjectsByType<IrairaBouHazard>(FindObjectsSortMode.None);
+        for (int i = 0; i < hazardObjects.Length; i++)
+        {
+            if (hazardObjects[i].GetComponentInParent<IrairaBouTubeBoundary>() != null)
+            {
+                continue;
+            }
+
+            Collider[] colliders = hazardObjects[i].GetComponentsInChildren<Collider>();
+            if (colliders.Length == 0)
+            {
+                continue;
+            }
+
+            obstacles.Add(new ObstacleInfo(
+                hazardObjects[i].GetInstanceID(),
+                SanitizeId(hazardObjects[i].name),
+                string.IsNullOrEmpty(hazardObjects[i].hazardLabel) ? hazardObjects[i].name : hazardObjects[i].hazardLabel,
+                colliders));
+        }
+
+        IrairaBouTubeBoundary[] tubeBoundaries = FindObjectsByType<IrairaBouTubeBoundary>(FindObjectsSortMode.None);
+        for (int i = 0; i < tubeBoundaries.Length; i++)
+        {
+            obstacles.Add(new ObstacleInfo(
+                tubeBoundaries[i].GetInstanceID(),
+                SanitizeId(tubeBoundaries[i].name),
+                string.IsNullOrEmpty(tubeBoundaries[i].hazardLabel) ? "Tube wall" : tubeBoundaries[i].hazardLabel,
+                tubeBoundaries[i]));
+        }
+
+        IrairaBouCheckpoint[] checkpointObjects = FindObjectsByType<IrairaBouCheckpoint>(FindObjectsSortMode.None);
+        for (int i = 0; i < checkpointObjects.Length; i++)
+        {
+            Collider[] colliders = checkpointObjects[i].GetComponentsInChildren<Collider>();
+            if (colliders.Length > 0)
+            {
+                checkpoints.Add(new MarkerInfo(
+                    checkpointObjects[i].GetInstanceID(),
+                    $"checkpoint_{checkpointObjects[i].index:00}_{SanitizeId(checkpointObjects[i].name)}",
+                    "Checkpoint",
+                    colliders));
+            }
+        }
+
+        IrairaBouFinish[] finishObjects = FindObjectsByType<IrairaBouFinish>(FindObjectsSortMode.None);
+        for (int i = 0; i < finishObjects.Length; i++)
+        {
+            Collider[] colliders = finishObjects[i].GetComponentsInChildren<Collider>();
+            if (colliders.Length > 0)
+            {
+                finishes.Add(new MarkerInfo(
+                    finishObjects[i].GetInstanceID(),
+                    SanitizeId(finishObjects[i].name),
+                    "Finish",
+                    colliders));
+            }
+        }
+    }
+
+    void CaptureNeutralHeadPose()
+    {
+        Transform root = rigRoot != null ? rigRoot : transform;
+        if (head == null || root == null)
+        {
+            neutralHeadLocalPosition = Vector3.zero;
+            neutralPitchDeg = 0f;
+            neutralYawDeg = 0f;
+            return;
+        }
+
+        neutralHeadLocalPosition = root.InverseTransformPoint(head.position);
+        Vector3 headForwardLocal = root.InverseTransformDirection(head.forward).normalized;
+        ComputePitchYaw(headForwardLocal, out neutralPitchDeg, out neutralYawDeg);
+    }
+
+    void ResetTrialMetrics()
+    {
+        sampleCount = 0;
+        collisionCount = 0;
+        nearMissCount = 0;
+        rigBlockCount = 0;
+        checkpointCount = 0;
+        finishReached = false;
+        pathLength = 0f;
+        minObstacleDistance = float.PositiveInfinity;
+        speedSum = 0f;
+        speedMax = 0f;
+        nearestDistanceSum = 0f;
+        nearestDistanceSamples = 0;
+        correctionTtcSum = 0f;
+        correctionCount = 0;
+        encounterSequence = 0;
+        hasLastBodyInput = false;
+        hasLastRemotePose = false;
+        lastRigBlocked = false;
+        lastStateGhostBlocked = false;
+        activeEncounters.Clear();
+        reachedCheckpoints.Clear();
+        reachedFinishes.Clear();
+    }
+
+    StreamWriter CreateWriter(string suffix)
+    {
+        string path = Path.Combine(activeOutputDirectory, $"{sessionId}_{suffix}.csv");
+        return new StreamWriter(path, false);
+    }
+
+    void WriteTimeseriesHeader()
+    {
+        WriteRow(timeseriesWriter,
+            "session_id", "participant_id", "trial_number", "condition_label", "visualization_mode",
+            "absolute_time", "time_s", "elapsed_s", "frame", "sample_index",
+            "body_anchor_available", "body_input_x", "body_input_y", "body_input_z", "body_input_magnitude", "body_input_change_rate",
+            "head_px", "head_py", "head_pz", "head_qx", "head_qy", "head_qz", "head_qw", "head_pitch_deg", "head_yaw_deg",
+            "remote_px", "remote_py", "remote_pz", "remote_yaw_deg", "remote_vx", "remote_vy", "remote_vz", "remote_speed", "remote_yaw_rate_deg_s",
+            "delayed_body_px", "delayed_body_py", "delayed_body_pz", "delayed_body_qx", "delayed_body_qy", "delayed_body_qz", "delayed_body_qw",
+            "state_ghost_role", "state_ghost_px", "state_ghost_py", "state_ghost_pz", "state_ghost_qx", "state_ghost_qy", "state_ghost_qz", "state_ghost_qw",
+            "predictive_window_translation_s", "predictive_window_yaw_s", "prediction_confidence_translation", "prediction_confidence_yaw",
+            "nearest_obstacle_id", "nearest_obstacle_label", "nearest_obstacle_distance_m", "nearest_obstacle_ttc_s", "nearest_obstacle_closing_speed_mps",
+            "rig_blocked", "rig_blocked_by", "state_ghost_blocked", "state_ghost_blocked_by");
+    }
+
+    void WriteEventsHeader()
+    {
+        WriteRow(eventsWriter,
+            "session_id", "participant_id", "trial_number", "condition_label", "visualization_mode",
+            "absolute_time", "time_s", "elapsed_s", "event_type", "object_id", "object_label",
+            "px", "py", "pz", "distance_m", "ttc_s", "note");
+    }
+
+    void WriteSummaryHeader()
+    {
+        WriteRow(summaryWriter,
+            "session_id", "participant_id", "trial_number", "condition_label", "start_mode", "end_mode",
+            "start_timestamp", "end_timestamp", "duration_s", "completed", "finish_reached",
+            "sample_count", "collision_count", "near_miss_count", "rig_block_count", "checkpoint_count",
+            "path_length_m", "straight_distance_m", "path_efficiency",
+            "min_obstacle_distance_m", "mean_nearest_obstacle_distance_m",
+            "mean_speed_mps", "max_speed_mps", "avoidance_correction_count", "mean_ttc_at_correction_s");
+    }
+
+    void WriteEncounterHeader()
+    {
+        WriteRow(encountersWriter,
+            "session_id", "participant_id", "trial_number", "condition_label", "visualization_mode",
+            "encounter_id", "object_id", "object_label", "start_time_s", "end_time_s", "duration_s",
+            "min_distance_m", "min_ttc_s", "collision", "near_miss", "passed",
+            "avoidance_onset_time_s", "ttc_at_correction_s", "correction_count");
+    }
+
+    void WriteTimeseriesRow(
+        float now,
+        float elapsed,
+        string mode,
+        bool bodyAnchorAvailable,
+        Vector3 bodyInput,
+        float bodyInputMagnitude,
+        float inputChangeRate,
+        float headPitchDeg,
+        float headYawDeg,
+        Vector3 remotePosition,
+        float remoteYawDeg,
+        Vector3 remoteVelocity,
+        float speed,
+        float yawRateDeg,
+        ObstacleSample nearest)
+    {
+        row.Clear();
+        AddCommonColumns(row, mode, now, elapsed);
+        row.AddBool(bodyAnchorAvailable);
+        row.AddF(bodyInput.x);
+        row.AddF(bodyInput.y);
+        row.AddF(bodyInput.z);
+        row.AddF(bodyInputMagnitude);
+        row.AddF(inputChangeRate);
+
+        AddTransformColumns(row, head);
+        row.AddF(headPitchDeg);
+        row.AddF(headYawDeg);
+
+        row.AddVector(remotePosition);
+        row.AddF(remoteYawDeg);
+        row.AddVector(remoteVelocity);
+        row.AddF(speed);
+        row.AddF(yawRateDeg);
+
+        AddTransformColumns(row, droneBodyAvatar != null ? droneBodyAvatar : rigRoot);
+
+        row.Add(GetStateGhostRole());
+        AddTransformColumns(row, stateGhostAvatar);
+
+        if (locomotion != null)
+        {
+            row.AddF(locomotion.CurrentTranslationPredictionWindow);
+            row.AddF(locomotion.CurrentYawPredictionWindow);
+            row.AddF(locomotion.CurrentTranslationPredictionConfidence);
+            row.AddF(locomotion.CurrentYawPredictionConfidence);
+        }
+        else
+        {
+            row.AddEmpty(4);
+        }
+
+        if (nearest.valid)
+        {
+            row.Add(nearest.obstacle.objectId);
+            row.Add(nearest.obstacle.label);
+            row.AddF(nearest.distance);
+            row.AddF(nearest.ttc);
+            row.AddF(nearest.closingSpeed);
+        }
+        else
+        {
+            row.AddEmpty(5);
+        }
+
+        row.AddBool(locomotion != null && locomotion.IsRigMovementBlocked);
+        row.Add(locomotion != null ? locomotion.RigMovementBlockedBy : string.Empty);
+        row.AddBool(locomotion != null && locomotion.IsStateGhostMovementBlocked);
+        row.Add(locomotion != null ? locomotion.StateGhostMovementBlockedBy : string.Empty);
+
+        WriteRow(timeseriesWriter, row);
+    }
+
+    void WriteEvent(string eventType, string objectId, string objectLabel, Vector3 position, float distance, float ttc, string note)
+    {
+        if (eventsWriter == null)
+        {
+            return;
+        }
+
+        float now = Time.time;
+        float elapsed = isLogging ? now - trialStartTime : 0f;
+        row.Clear();
+        row.Add(sessionId);
+        row.Add(activeParticipantId);
+        row.Add(trialNumber.ToString(CultureInfo.InvariantCulture));
+        row.Add(activeConditionLabel);
+        row.Add(GetModeString());
+        row.Add(DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
+        row.AddF(now);
+        row.AddF(elapsed);
+        row.Add(eventType);
+        row.Add(objectId);
+        row.Add(objectLabel);
+        row.AddVector(position);
+        row.AddF(distance);
+        row.AddF(ttc);
+        row.Add(note);
+        WriteRow(eventsWriter, row);
+    }
+
+    void WriteTrialSummary(bool completed)
+    {
+        float duration = Time.time - trialStartTime;
+        float straightDistance = Vector3.Distance(trialStartPosition, GetRemotePosition());
+        float efficiency = pathLength > 1e-5f ? straightDistance / pathLength : float.NaN;
+        float meanDistance = nearestDistanceSamples > 0 ? nearestDistanceSum / nearestDistanceSamples : float.NaN;
+        float meanSpeed = sampleCount > 0 ? speedSum / sampleCount : float.NaN;
+        float meanCorrectionTtc = correctionCount > 0 ? correctionTtcSum / correctionCount : float.NaN;
+
+        row.Clear();
+        row.Add(sessionId);
+        row.Add(activeParticipantId);
+        row.Add(trialNumber.ToString(CultureInfo.InvariantCulture));
+        row.Add(activeConditionLabel);
+        row.Add(activeMode);
+        row.Add(GetModeString());
+        row.Add(sessionStartDateTime.ToString("o", CultureInfo.InvariantCulture));
+        row.Add(DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
+        row.AddF(duration);
+        row.AddBool(completed);
+        row.AddBool(finishReached);
+        row.Add(sampleCount.ToString(CultureInfo.InvariantCulture));
+        row.Add(collisionCount.ToString(CultureInfo.InvariantCulture));
+        row.Add(nearMissCount.ToString(CultureInfo.InvariantCulture));
+        row.Add(rigBlockCount.ToString(CultureInfo.InvariantCulture));
+        row.Add(checkpointCount.ToString(CultureInfo.InvariantCulture));
+        row.AddF(pathLength);
+        row.AddF(straightDistance);
+        row.AddF(efficiency);
+        row.AddF(minObstacleDistance);
+        row.AddF(meanDistance);
+        row.AddF(meanSpeed);
+        row.AddF(speedMax);
+        row.Add(correctionCount.ToString(CultureInfo.InvariantCulture));
+        row.AddF(meanCorrectionTtc);
+        WriteRow(summaryWriter, row);
+    }
+
+    void UpdateBlockingEvents(Vector3 probePosition)
+    {
+        bool rigBlocked = locomotion != null && locomotion.IsRigMovementBlocked;
+        if (rigBlocked != lastRigBlocked)
+        {
+            WriteEvent(
+                rigBlocked ? "rig_blocked_start" : "rig_blocked_end",
+                string.Empty,
+                locomotion != null ? locomotion.RigMovementBlockedBy : string.Empty,
+                probePosition,
+                0f,
+                float.NaN,
+                string.Empty);
+            if (rigBlocked)
+            {
+                rigBlockCount++;
+            }
+            lastRigBlocked = rigBlocked;
+        }
+
+        bool ghostBlocked = locomotion != null && locomotion.IsStateGhostMovementBlocked;
+        if (ghostBlocked != lastStateGhostBlocked)
+        {
+            WriteEvent(
+                ghostBlocked ? "state_ghost_blocked_start" : "state_ghost_blocked_end",
+                string.Empty,
+                locomotion != null ? locomotion.StateGhostMovementBlockedBy : string.Empty,
+                probePosition,
+                0f,
+                float.NaN,
+                string.Empty);
+            lastStateGhostBlocked = ghostBlocked;
+        }
+    }
+
+    void UpdateMarkerEvents(Vector3 probePosition)
+    {
+        for (int i = 0; i < checkpoints.Count; i++)
+        {
+            MarkerInfo checkpoint = checkpoints[i];
+            if (reachedCheckpoints.Contains(checkpoint.id))
+            {
+                continue;
+            }
+
+            if (IsTouchingMarker(checkpoint, probePosition))
+            {
+                reachedCheckpoints.Add(checkpoint.id);
+                checkpointCount++;
+                WriteEvent("checkpoint_reached", checkpoint.objectId, checkpoint.label, probePosition, 0f, float.NaN, string.Empty);
+            }
+        }
+
+        for (int i = 0; i < finishes.Count; i++)
+        {
+            MarkerInfo finish = finishes[i];
+            if (reachedFinishes.Contains(finish.id))
+            {
+                continue;
+            }
+
+            if (IsTouchingMarker(finish, probePosition))
+            {
+                reachedFinishes.Add(finish.id);
+                finishReached = true;
+                WriteEvent("finish_reached", finish.objectId, finish.label, probePosition, 0f, float.NaN, string.Empty);
+            }
+        }
+    }
+
+    void UpdateObstacleEncounters(Vector3 probePosition, float bodyInputMagnitude, float inputChangeRate)
+    {
+        HashSet<int> seenThisSample = null;
+        for (int i = 0; i < obstacles.Count; i++)
+        {
+            ObstacleSample sample = SampleObstacle(obstacles[i], probePosition, GetCurrentRemoteVelocity());
+            if (!sample.valid)
+            {
+                continue;
+            }
+
+            bool alreadyActive = activeEncounters.ContainsKey(obstacles[i].id);
+            bool shouldTrack = sample.distance <= encounterStartDistance
+                || (alreadyActive && sample.distance <= Mathf.Max(encounterEndDistance, encounterStartDistance));
+
+            if (!shouldTrack)
+            {
+                continue;
+            }
+
+            if (seenThisSample == null)
+            {
+                seenThisSample = new HashSet<int>();
+            }
+            seenThisSample.Add(obstacles[i].id);
+            UpdateEncounter(sample, probePosition, bodyInputMagnitude, inputChangeRate);
+        }
+
+        EndFarEncounters(seenThisSample);
+    }
+
+    void UpdateEncounter(ObstacleSample sample, Vector3 probePosition, float bodyInputMagnitude, float inputChangeRate)
+    {
+        if (!activeEncounters.TryGetValue(sample.obstacle.id, out EncounterState state))
+        {
+            state = new EncounterState
+            {
+                encounterId = ++encounterSequence,
+                obstacle = sample.obstacle,
+                startTime = Time.time,
+                minDistance = float.PositiveInfinity,
+                minTtc = float.PositiveInfinity,
+                avoidanceOnsetTime = float.NaN,
+                ttcAtCorrection = float.NaN,
+                previousClosingSpeed = sample.closingSpeed
+            };
+            activeEncounters.Add(sample.obstacle.id, state);
+            WriteEvent("obstacle_encounter_start", sample.obstacle.objectId, sample.obstacle.label, probePosition, sample.distance, sample.ttc, string.Empty);
+        }
+
+        state.lastSeenTime = Time.time;
+        state.minDistance = Mathf.Min(state.minDistance, sample.distance);
+        if (IsFinite(sample.ttc))
+        {
+            state.minTtc = Mathf.Min(state.minTtc, sample.ttc);
+        }
+
+        bool contact = sample.contact || sample.distance <= contactTolerance;
+        if (contact && !state.activeContact)
+        {
+            state.activeContact = true;
+            state.hadCollision = true;
+            collisionCount++;
+            WriteEvent("collision_start", sample.obstacle.objectId, sample.obstacle.label, probePosition, sample.distance, sample.ttc, string.Empty);
+        }
+        else if (!contact && state.activeContact)
+        {
+            state.activeContact = false;
+            WriteEvent("collision_end", sample.obstacle.objectId, sample.obstacle.label, probePosition, sample.distance, sample.ttc, string.Empty);
+        }
+
+        bool nearMiss = !contact && sample.distance <= nearMissDistance;
+        if (nearMiss && !state.activeNearMiss)
+        {
+            state.activeNearMiss = true;
+            state.hadNearMiss = true;
+            nearMissCount++;
+            WriteEvent("near_miss_start", sample.obstacle.objectId, sample.obstacle.label, probePosition, sample.distance, sample.ttc, string.Empty);
+        }
+        else if (!nearMiss && state.activeNearMiss)
+        {
+            state.activeNearMiss = false;
+            WriteEvent("near_miss_end", sample.obstacle.objectId, sample.obstacle.label, probePosition, sample.distance, sample.ttc, string.Empty);
+        }
+
+        bool correctionByInput = inputChangeRate >= correctionInputRateThreshold && bodyInputMagnitude > 0.05f;
+        bool correctionByClosingSpeed = state.previousClosingSpeed > 0.05f
+            && state.previousClosingSpeed - sample.closingSpeed >= correctionClosingSpeedDrop;
+        if ((correctionByInput || correctionByClosingSpeed) && IsFinite(sample.ttc))
+        {
+            state.correctionCount++;
+            correctionCount++;
+            correctionTtcSum += sample.ttc;
+            if (!IsFinite(state.avoidanceOnsetTime))
+            {
+                state.avoidanceOnsetTime = Time.time;
+                state.ttcAtCorrection = sample.ttc;
+                WriteEvent("avoidance_correction", sample.obstacle.objectId, sample.obstacle.label, probePosition, sample.distance, sample.ttc, string.Empty);
+            }
+        }
+
+        state.previousClosingSpeed = sample.closingSpeed;
+    }
+
+    void EndFarEncounters(HashSet<int> seenThisSample)
+    {
+        encountersToEnd.Clear();
+        foreach (KeyValuePair<int, EncounterState> pair in activeEncounters)
+        {
+            if (seenThisSample != null && seenThisSample.Contains(pair.Key))
+            {
+                continue;
+            }
+
+            encountersToEnd.Add(pair.Key);
+        }
+
+        for (int i = 0; i < encountersToEnd.Count; i++)
+        {
+            if (activeEncounters.TryGetValue(encountersToEnd[i], out EncounterState state))
+            {
+                WriteEncounterRow(state, true);
+                WriteEvent("obstacle_encounter_end", state.obstacle.objectId, state.obstacle.label, GetProbePosition(), state.minDistance, state.minTtc, string.Empty);
+                activeEncounters.Remove(encountersToEnd[i]);
+            }
+        }
+    }
+
+    void EndAllActiveEncounters(bool passed)
+    {
+        encountersToEnd.Clear();
+        foreach (KeyValuePair<int, EncounterState> pair in activeEncounters)
+        {
+            encountersToEnd.Add(pair.Key);
+        }
+
+        for (int i = 0; i < encountersToEnd.Count; i++)
+        {
+            if (activeEncounters.TryGetValue(encountersToEnd[i], out EncounterState state))
+            {
+                WriteEncounterRow(state, passed);
+                activeEncounters.Remove(encountersToEnd[i]);
+            }
+        }
+    }
+
+    void WriteEncounterRow(EncounterState state, bool passed)
+    {
+        if (encountersWriter == null)
+        {
+            return;
+        }
+
+        float endTime = Time.time;
+        row.Clear();
+        row.Add(sessionId);
+        row.Add(activeParticipantId);
+        row.Add(trialNumber.ToString(CultureInfo.InvariantCulture));
+        row.Add(activeConditionLabel);
+        row.Add(GetModeString());
+        row.Add(state.encounterId.ToString(CultureInfo.InvariantCulture));
+        row.Add(state.obstacle.objectId);
+        row.Add(state.obstacle.label);
+        row.AddF(state.startTime - trialStartTime);
+        row.AddF(endTime - trialStartTime);
+        row.AddF(endTime - state.startTime);
+        row.AddF(state.minDistance);
+        row.AddF(state.minTtc);
+        row.AddBool(state.hadCollision);
+        row.AddBool(state.hadNearMiss);
+        row.AddBool(passed && !state.hadCollision);
+        row.AddF(IsFinite(state.avoidanceOnsetTime) ? state.avoidanceOnsetTime - trialStartTime : float.NaN);
+        row.AddF(state.ttcAtCorrection);
+        row.Add(state.correctionCount.ToString(CultureInfo.InvariantCulture));
+        WriteRow(encountersWriter, row);
+    }
+
+    ObstacleSample SampleNearestObstacle(Vector3 probePosition, Vector3 velocity)
+    {
+        ObstacleSample nearest = ObstacleSample.Invalid;
+        for (int i = 0; i < obstacles.Count; i++)
+        {
+            ObstacleSample sample = SampleObstacle(obstacles[i], probePosition, velocity);
+            if (!sample.valid)
+            {
+                continue;
+            }
+
+            if (!nearest.valid || sample.distance < nearest.distance)
+            {
+                nearest = sample;
+            }
+        }
+
+        return nearest;
+    }
+
+    ObstacleSample SampleObstacle(ObstacleInfo obstacle, Vector3 probePosition, Vector3 velocity)
+    {
+        if (obstacle.tubeBoundary != null)
+        {
+            if (!obstacle.tubeBoundary.TryGetWallClearance(
+                probePosition,
+                probeRadius,
+                out Vector3 nearestPoint,
+                out _,
+                out _,
+                out float clearance))
+            {
+                return ObstacleSample.Invalid;
+            }
+
+            Vector3 radialDirection = probePosition - nearestPoint;
+            if (radialDirection.sqrMagnitude <= 1e-8f)
+            {
+                radialDirection = Vector3.up;
+            }
+            radialDirection.Normalize();
+
+            float distance = Mathf.Max(0f, clearance);
+            float closingSpeed = Vector3.Dot(velocity, radialDirection);
+            return new ObstacleSample
+            {
+                valid = true,
+                obstacle = obstacle,
+                distance = distance,
+                ttc = closingSpeed > 1e-4f ? distance / closingSpeed : float.NaN,
+                closingSpeed = closingSpeed,
+                contact = clearance <= contactTolerance
+            };
+        }
+
+        if (obstacle.colliders == null || obstacle.colliders.Length == 0)
+        {
+            return ObstacleSample.Invalid;
+        }
+
+        float bestDistance = float.PositiveInfinity;
+        Vector3 bestClosestPoint = probePosition;
+        bool found = false;
+
+        for (int i = 0; i < obstacle.colliders.Length; i++)
+        {
+            Collider col = obstacle.colliders[i];
+            if (col == null || !col.enabled)
+            {
+                continue;
+            }
+
+            Vector3 closest = col.ClosestPoint(probePosition);
+            float surfaceDistance = Mathf.Max(0f, Vector3.Distance(probePosition, closest) - probeRadius);
+            if (surfaceDistance < bestDistance)
+            {
+                bestDistance = surfaceDistance;
+                bestClosestPoint = closest;
+                found = true;
+            }
+        }
+
+        if (!found)
+        {
+            return ObstacleSample.Invalid;
+        }
+
+        Vector3 direction = bestClosestPoint - probePosition;
+        if (direction.sqrMagnitude <= 1e-8f && obstacle.transform != null)
+        {
+            direction = obstacle.transform.position - probePosition;
+        }
+        if (direction.sqrMagnitude <= 1e-8f)
+        {
+            direction = velocity.sqrMagnitude > 1e-8f ? velocity.normalized : Vector3.forward;
+        }
+        direction.Normalize();
+
+        float closingSpeedToObstacle = Vector3.Dot(velocity, direction);
+        return new ObstacleSample
+        {
+            valid = true,
+            obstacle = obstacle,
+            distance = bestDistance,
+            ttc = closingSpeedToObstacle > 1e-4f ? bestDistance / closingSpeedToObstacle : float.NaN,
+            closingSpeed = closingSpeedToObstacle,
+            contact = bestDistance <= contactTolerance
+        };
+    }
+
+    bool IsTouchingMarker(MarkerInfo marker, Vector3 probePosition)
+    {
+        for (int i = 0; i < marker.colliders.Length; i++)
+        {
+            Collider col = marker.colliders[i];
+            if (col == null || !col.enabled)
+            {
+                continue;
+            }
+
+            float distance = Mathf.Max(0f, Vector3.Distance(probePosition, col.ClosestPoint(probePosition)) - probeRadius);
+            if (distance <= contactTolerance)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    Vector3 GetProbePosition()
+    {
+        if (probe != null)
+        {
+            return probe.position;
+        }
+
+        if (head != null)
+        {
+            return head.position;
+        }
+
+        return rigRoot != null ? rigRoot.position : transform.position;
+    }
+
+    Vector3 GetRemotePosition()
+    {
+        if (locomotion != null)
+        {
+            return locomotion.RealTimeDronePosition;
+        }
+
+        return rigRoot != null ? rigRoot.position : transform.position;
+    }
+
+    float GetRemoteYawDeg()
+    {
+        if (locomotion != null)
+        {
+            return locomotion.RealTimeDroneYawDeg;
+        }
+
+        Transform root = rigRoot != null ? rigRoot : transform;
+        return root.eulerAngles.y;
+    }
+
+    Vector3 GetCurrentRemoteVelocity()
+    {
+        if (!hasLastRemotePose)
+        {
+            return Vector3.zero;
+        }
+
+        float dt = Mathf.Max(1e-4f, Time.time - lastRemoteSampleTime);
+        return (GetRemotePosition() - lastRemotePosition) / dt;
+    }
+
+    Vector3 GetBodyInputLocal(out bool bodyAnchorAvailable, out float headPitchDeg, out float headYawDeg)
+    {
+        bodyAnchorAvailable = false;
+        headPitchDeg = float.NaN;
+        headYawDeg = float.NaN;
+
+        if (locomotion != null)
+        {
+            Vector3 offset = locomotion.CurrentCenterOffsetLocal;
+            headPitchDeg = locomotion.CurrentHeadPitchDeg;
+            if (head != null && rigRoot != null)
+            {
+                Vector3 headForwardLocal = rigRoot.InverseTransformDirection(head.forward).normalized;
+                ComputePitchYaw(headForwardLocal, out _, out headYawDeg);
+            }
+            bodyAnchorAvailable = locomotion.bodyAnchorProvider != null
+                && rigRoot != null
+                && locomotion.bodyAnchorProvider.TryGetAnchorLocalPose(rigRoot, out _);
+            return offset;
+        }
+
+        if (head == null || rigRoot == null)
+        {
+            return Vector3.zero;
+        }
+
+        Vector3 headLocal = rigRoot.InverseTransformPoint(head.position);
+        Vector3 offsetLocal = headLocal - neutralHeadLocalPosition;
+        Vector3 forwardLocal = rigRoot.InverseTransformDirection(head.forward).normalized;
+        ComputePitchYaw(forwardLocal, out float pitch, out float yaw);
+        headPitchDeg = Mathf.DeltaAngle(neutralPitchDeg, pitch);
+        headYawDeg = Mathf.DeltaAngle(neutralYawDeg, yaw);
+        return offsetLocal;
+    }
+
+    float ComputeInputChangeRate(Vector3 bodyInput, float now)
+    {
+        if (!hasLastBodyInput)
+        {
+            lastBodyInput = bodyInput;
+            lastBodyInputTime = now;
+            hasLastBodyInput = true;
+            return 0f;
+        }
+
+        float dt = Mathf.Max(1e-4f, now - lastBodyInputTime);
+        float rate = (bodyInput - lastBodyInput).magnitude / dt;
+        lastBodyInput = bodyInput;
+        lastBodyInputTime = now;
+        return rate;
+    }
+
+    string GetModeString()
+    {
+        return locomotion != null ? locomotion.visualizationMode.ToString() : "NoLocomotion";
+    }
+
+    string ResolveConditionLabel(string mode)
+    {
+        if (!string.IsNullOrWhiteSpace(conditionLabelOverride))
+        {
+            return conditionLabelOverride.Trim();
+        }
+
+        if (locomotion == null)
+        {
+            return mode;
+        }
+
+        switch (locomotion.visualizationMode)
+        {
+            case PredictiveGhostAvatarLocomotion.GhostVisualizationMode.RealTimeDroneBody:
+                return "NoDelay";
+            case PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedDroneBody:
+                return "DelayedFeedback";
+            case PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithRealTimeGhost:
+                return "Delayed_CurrentAvatar";
+            case PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithPredictiveGhost:
+                return "Delayed_PredictiveAvatar";
+            default:
+                return mode;
+        }
+    }
+
+    string GetStateGhostRole()
+    {
+        if (locomotion == null)
+        {
+            return string.Empty;
+        }
+
+        switch (locomotion.visualizationMode)
+        {
+            case PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithRealTimeGhost:
+                return "current_avatar";
+            case PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithPredictiveGhost:
+                return "predictive_avatar";
+            default:
+                return string.Empty;
+        }
+    }
+
+    string ResolveOutputDirectory()
+    {
+        string directory = string.IsNullOrWhiteSpace(outputDirectory)
+            ? "Data/PredictiveFlyObjective"
+            : outputDirectory.Trim();
+
+        if (Path.IsPathRooted(directory))
+        {
+            return Path.GetFullPath(directory);
+        }
+
+#if UNITY_EDITOR
+        return Path.GetFullPath(Path.Combine(Application.dataPath, "..", directory));
+#else
+        return Path.Combine(Application.persistentDataPath, directory);
+#endif
+    }
+
+    void FlushAll()
+    {
+        timeseriesWriter?.Flush();
+        eventsWriter?.Flush();
+        summaryWriter?.Flush();
+        encountersWriter?.Flush();
+    }
+
+    void DisposeWriters()
+    {
+        timeseriesWriter?.Dispose();
+        eventsWriter?.Dispose();
+        summaryWriter?.Dispose();
+        encountersWriter?.Dispose();
+        timeseriesWriter = null;
+        eventsWriter = null;
+        summaryWriter = null;
+        encountersWriter = null;
+    }
+
+    void AddCommonColumns(List<string> values, string mode, float now, float elapsed)
+    {
+        values.Add(sessionId);
+        values.Add(activeParticipantId);
+        values.Add(trialNumber.ToString(CultureInfo.InvariantCulture));
+        values.Add(activeConditionLabel);
+        values.Add(mode);
+        values.Add(DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
+        values.AddF(now);
+        values.AddF(elapsed);
+        values.Add(Time.frameCount.ToString(CultureInfo.InvariantCulture));
+        values.Add(sampleCount.ToString(CultureInfo.InvariantCulture));
+    }
+
+    static void AddTransformColumns(List<string> values, Transform target)
+    {
+        if (target == null)
+        {
+            values.AddEmpty(7);
+            return;
+        }
+
+        values.AddVector(target.position);
+        Quaternion q = target.rotation;
+        values.AddF(q.x);
+        values.AddF(q.y);
+        values.AddF(q.z);
+        values.AddF(q.w);
+    }
+
+    static void ComputePitchYaw(Vector3 forwardLocal, out float pitchDeg, out float yawDeg)
+    {
+        float planar = Mathf.Sqrt(forwardLocal.x * forwardLocal.x + forwardLocal.z * forwardLocal.z);
+        pitchDeg = Mathf.Atan2(forwardLocal.y, planar) * Mathf.Rad2Deg;
+        yawDeg = Mathf.Atan2(forwardLocal.x, forwardLocal.z) * Mathf.Rad2Deg;
+    }
+
+    static void WriteRow(StreamWriter writer, params string[] values)
+    {
+        if (writer == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (i > 0)
+            {
+                writer.Write(',');
+            }
+            writer.Write(EscapeCsv(values[i]));
+        }
+        writer.WriteLine();
+    }
+
+    static void WriteRow(StreamWriter writer, List<string> values)
+    {
+        if (writer == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < values.Count; i++)
+        {
+            if (i > 0)
+            {
+                writer.Write(',');
+            }
+            writer.Write(EscapeCsv(values[i]));
+        }
+        writer.WriteLine();
+    }
+
+    static string EscapeCsv(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        bool mustQuote = value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0;
+        if (!mustQuote)
+        {
+            return value;
+        }
+
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
+    }
+
+    static string Sanitize(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "NA";
+        }
+
+        char[] chars = value.Trim().ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            char c = chars[i];
+            if (!char.IsLetterOrDigit(c) && c != '_' && c != '-')
+            {
+                chars[i] = '_';
+            }
+        }
+        return new string(chars);
+    }
+
+    static string SanitizeId(string value)
+    {
+        return Sanitize(string.IsNullOrEmpty(value) ? "object" : value);
+    }
+
+    static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
+
+    class ObstacleInfo
+    {
+        public readonly int id;
+        public readonly string objectId;
+        public readonly string label;
+        public readonly Collider[] colliders;
+        public readonly IrairaBouTubeBoundary tubeBoundary;
+        public readonly Transform transform;
+
+        public ObstacleInfo(int id, string objectId, string label, Collider[] colliders)
+        {
+            this.id = id;
+            this.objectId = objectId;
+            this.label = label;
+            this.colliders = colliders;
+            tubeBoundary = null;
+            transform = colliders != null && colliders.Length > 0 && colliders[0] != null
+                ? colliders[0].transform
+                : null;
+        }
+
+        public ObstacleInfo(int id, string objectId, string label, IrairaBouTubeBoundary tubeBoundary)
+        {
+            this.id = id;
+            this.objectId = objectId;
+            this.label = label;
+            this.tubeBoundary = tubeBoundary;
+            colliders = null;
+            transform = tubeBoundary != null ? tubeBoundary.transform : null;
+        }
+    }
+
+    class MarkerInfo
+    {
+        public readonly int id;
+        public readonly string objectId;
+        public readonly string label;
+        public readonly Collider[] colliders;
+
+        public MarkerInfo(int id, string objectId, string label, Collider[] colliders)
+        {
+            this.id = id;
+            this.objectId = objectId;
+            this.label = label;
+            this.colliders = colliders;
+        }
+    }
+
+    class EncounterState
+    {
+        public int encounterId;
+        public ObstacleInfo obstacle;
+        public float startTime;
+        public float lastSeenTime;
+        public float minDistance;
+        public float minTtc;
+        public bool hadCollision;
+        public bool hadNearMiss;
+        public bool activeContact;
+        public bool activeNearMiss;
+        public float avoidanceOnsetTime;
+        public float ttcAtCorrection;
+        public int correctionCount;
+        public float previousClosingSpeed;
+    }
+
+    struct ObstacleSample
+    {
+        public bool valid;
+        public ObstacleInfo obstacle;
+        public float distance;
+        public float ttc;
+        public float closingSpeed;
+        public bool contact;
+
+        public static ObstacleSample Invalid => new ObstacleSample { valid = false };
+    }
+}
+
+static class PredictiveFlyObjectiveCsvExtensions
+{
+    public static void AddF(this List<string> values, float value)
+    {
+        values.Add((float.IsNaN(value) || float.IsInfinity(value))
+            ? string.Empty
+            : value.ToString("0.######", CultureInfo.InvariantCulture));
+    }
+
+    public static void AddBool(this List<string> values, bool value)
+    {
+        values.Add(value ? "1" : "0");
+    }
+
+    public static void AddVector(this List<string> values, Vector3 value)
+    {
+        values.AddF(value.x);
+        values.AddF(value.y);
+        values.AddF(value.z);
+    }
+
+    public static void AddEmpty(this List<string> values, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            values.Add(string.Empty);
+        }
+    }
+}
