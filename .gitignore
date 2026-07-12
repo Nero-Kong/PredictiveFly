@@ -23,6 +23,15 @@
 # Recordings can get excessive in size
 /[Rr]ecordings/
 
+# Local experiment recordings, recovery copies, and generated review artifacts
+/[Dd]ata/PredictiveFlyObjective/
+/ProjectBackups/
+/output/
+/outputs/
+/tmp/
+/Assets/_Recovery/
+/Assets/_Recovery.meta
+
 # Uncomment this line if you wish to ignore the asset store tools plugin
 # /[Aa]ssets/AssetStoreTools*
 

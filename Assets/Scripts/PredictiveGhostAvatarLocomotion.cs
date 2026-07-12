@@ -65,6 +65,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     public KeyCode delayedRealTimeGhostKey = KeyCode.Alpha3;
     [FormerlySerializedAs("combinedGhostKey")]
     public KeyCode delayedPredictiveGhostKey = KeyCode.Alpha4;
+    [Tooltip("Allow number keys to change experiment conditions at runtime. The experiment controller disables this during trials.")]
+    public bool allowRuntimeVisualizationHotkeys = true;
     [Tooltip("Optional transparent state ghost. If empty, a runtime copy of Drone Body Avatar is created when mode 3 or 4 is used.")]
     [FormerlySerializedAs("currentGhostAvatar")]
     public Transform stateGhostAvatar;
@@ -116,6 +118,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     public PredictionMethod predictionMethod = PredictionMethod.AccelerationJerkLimited;
     [Tooltip("Press this key in Play Mode to cycle prediction methods. Set to None to disable.")]
     public KeyCode switchPredictionMethodKey = KeyCode.P;
+    [Tooltip("Allow the prediction method hotkey at runtime. The experiment controller disables this during trials.")]
+    public bool allowRuntimePredictionHotkey = true;
     [Tooltip("Reset estimator history when changing prediction method to avoid stale velocity state carrying across methods.")]
     public bool resetEstimatorOnMethodSwitch = true;
     [Tooltip("Minimum forward lookahead for translation when input has just started or is unstable.")]
@@ -164,15 +168,15 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Tooltip("Maximum planar speed in m/s.")]
     public float horizontalSpeed = 5f;
     [Tooltip("Ignore small lean around center.")]
-    public float planarDeadZone = 0.02f;
+    public float planarDeadZone = 0.012f;
     [Tooltip("Lean magnitude corresponding to max planar speed.")]
-    public float planarMaxOffset = 0.14f;
+    public float planarMaxOffset = 0.085f;
     [Tooltip("1 = linear, >1 softer near center.")]
-    public float planarResponseExponent = 1.2f;
+    public float planarResponseExponent = 0.9f;
     [Tooltip("0 = use lean direction only, 1 = use head forward only.")]
     [Range(0f, 1f)] public float headDirectionBlend = 0.2f;
     [Tooltip("Planar velocity smoothing (1/s).")]
-    public float planarSmoothing = 10f;
+    public float planarSmoothing = 18f;
 
     [Header("Body Reference")]
     [Tooltip("InitialHeadPosition uses the calibrated HMD position. BodyAnchor uses the current HMD-to-body-anchor offset, so stance drift and small steps do not become locomotion input.")]
@@ -210,6 +214,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Header("Bounds / Recenter")]
     public Vector3 positionLimits = 2000f * Vector3.one;
     public KeyCode recenterKey = KeyCode.C;
+    [Tooltip("When false, tracking and delay buffers keep updating but locomotion commands are held at zero.")]
+    public bool locomotionInputEnabled = true;
     [Tooltip("Also reset the locomotion root to its initial pose on recenter.")]
     public bool resetTargetPoseOnRecenter = true;
 
@@ -255,6 +261,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [SerializeField] float activeInputToRigDelayMilliseconds;
     [SerializeField] bool rigMovementBlocked;
     [SerializeField] string rigMovementBlockedBy;
+    [SerializeField] bool remoteMovementBlocked;
+    [SerializeField] string remoteMovementBlockedBy;
     [SerializeField] bool stateGhostMovementBlocked;
     [SerializeField] string stateGhostMovementBlockedBy;
 
@@ -319,8 +327,16 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     public float CurrentYawPredictionConfidence => currentYawPredictionConfidence;
     public bool IsRigMovementBlocked => rigMovementBlocked;
     public string RigMovementBlockedBy => rigMovementBlockedBy;
+    public bool IsRemoteMovementBlocked => remoteMovementBlocked;
+    public string RemoteMovementBlockedBy => remoteMovementBlockedBy;
     public bool IsStateGhostMovementBlocked => stateGhostMovementBlocked;
     public string StateGhostMovementBlockedBy => stateGhostMovementBlockedBy;
+    public bool IsBodyAnchorAvailable => planarReferenceMode != PlanarReferenceMode.BodyAnchor || debugHasBodyAnchor;
+    public bool InputToRigDelayBufferReady => inputToRigDelayBufferReady;
+    public float ActiveInputToRigDelayMilliseconds => activeInputToRigDelayMilliseconds;
+    public PredictionMethod ActivePredictionMethod => activePredictionMethod;
+    public GhostVisualizationMode ActiveVisualizationMode => activeVisualizationMode;
+    public bool LocomotionInputEnabled => locomotionInputEnabled;
 
     void Awake()
     {
@@ -393,6 +409,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
         LocomotionCommand command = SampleCommand(dt);
         hasActiveInput = command.hasInput;
+        remoteMovementBlocked = false;
+        remoteMovementBlockedBy = string.Empty;
         stateGhostMovementBlocked = false;
         stateGhostMovementBlockedBy = string.Empty;
 
@@ -497,8 +515,22 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         ApplyVisualizationModeIfChanged(force: true);
     }
 
+    public void SetLocomotionInputEnabled(bool enabled)
+    {
+        locomotionInputEnabled = enabled;
+        if (!enabled)
+        {
+            hasActiveInput = false;
+        }
+    }
+
     void HandleVisualizationModeSwitchInput()
     {
+        if (!allowRuntimeVisualizationHotkeys)
+        {
+            return;
+        }
+
         if (IsModeKeyDown(realTimeDroneBodyKey, KeyCode.Alpha1, KeyCode.Keypad1))
         {
             SetVisualizationMode(GhostVisualizationMode.RealTimeDroneBody);
@@ -731,7 +763,12 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         }
 
         Vector3 requestedPosition = ClampPosition(realTimeDronePosition + command.directWorldVelocity * dt, positionLimits);
-        realTimeDronePosition = ResolveStateGhostReachablePosition(realTimeDronePosition, requestedPosition);
+        realTimeDronePosition = ResolveSoftBlockedPosition(
+            realTimeDronePosition,
+            requestedPosition,
+            Mathf.Max(0.01f, collisionProbeRadius),
+            out remoteMovementBlocked,
+            out remoteMovementBlockedBy);
         realTimeDroneYawDeg += command.directYawRateDeg * dt;
     }
 
@@ -1028,6 +1065,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         smoothedPlanarVelocityLocal = Vector3.zero;
         rigMovementBlocked = false;
         rigMovementBlockedBy = string.Empty;
+        remoteMovementBlocked = false;
+        remoteMovementBlockedBy = string.Empty;
         stateGhostMovementBlocked = false;
         stateGhostMovementBlockedBy = string.Empty;
         hasVisualGhostPose = false;
@@ -1057,7 +1096,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
     void HandlePredictionMethodSwitchInput()
     {
-        if (switchPredictionMethodKey == KeyCode.None)
+        if (!allowRuntimePredictionHotkey || switchPredictionMethodKey == KeyCode.None)
         {
             return;
         }
@@ -1319,6 +1358,20 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         Vector3 centerOffsetLocal = ComputeCenterOffsetLocal(headLocalPos);
         Vector3 planarOffsetLocal = new Vector3(centerOffsetLocal.x, 0f, centerOffsetLocal.z);
         currentCenterOffsetLocal = centerOffsetLocal;
+
+        if (!locomotionInputEnabled)
+        {
+            currentPredictionVelocityLocal = Vector3.zero;
+            currentHeadPitchDeg = ComputeHeadPitchDeg(GetControlHeadForwardLocal());
+            currentVerticalCommand = 0f;
+            smoothedPlanarVelocityLocal = Vector3.zero;
+            UpdateAdaptivePredictionWindows(Vector3.zero, 0f, false, dt);
+            filteredPredictionVelocityWorld = Vector3.zero;
+            filteredPredictionAccelerationWorld = Vector3.zero;
+            filteredPredictionYawRateDeg = 0f;
+            filteredPredictionYawAccelerationDeg = 0f;
+            return default;
+        }
 
         float planarSpeed = ComputePlanarSpeed(planarOffsetLocal.magnitude);
         Vector3 planarDirectionLocal = ComputePlanarDirectionLocal(planarOffsetLocal);

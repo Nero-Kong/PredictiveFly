@@ -10,8 +10,19 @@ public class IrairaBouTubeBoundary : MonoBehaviour
     public Vector3[] centerline = new Vector3[0];
     public float wallRadius = 1f;
     public float[] radiusProfile = new float[0];
+    [SerializeField] float[] cumulativeDistances = new float[0];
+    [SerializeField] float totalCenterlineLength;
     public float contactTolerance = 0.015f;
     public string hazardLabel = "Transparent tube wall";
+
+    public float TotalCenterlineLength
+    {
+        get
+        {
+            EnsureDistanceCache();
+            return totalCenterlineLength;
+        }
+    }
 
     public void Configure(IReadOnlyList<Vector3> path, float radius)
     {
@@ -37,6 +48,7 @@ public class IrairaBouTubeBoundary : MonoBehaviour
         }
 
         wallRadius = Mathf.Max(0.01f, nominalRadius);
+        RebuildDistanceCache();
     }
 
     public bool IsTouchingWall(Vector3 point, float probeRadius, out Vector3 nearestPoint, out float radialDistance)
@@ -76,6 +88,59 @@ public class IrairaBouTubeBoundary : MonoBehaviour
         return true;
     }
 
+    public bool TryGetRouteProgress(
+        Vector3 point,
+        out float normalizedProgress,
+        out float distanceAlongRoute,
+        out float totalRouteLength,
+        out Vector3 nearestPoint,
+        out float radialDistance,
+        out float localRadius)
+    {
+        normalizedProgress = 0f;
+        distanceAlongRoute = 0f;
+        totalRouteLength = 0f;
+        nearestPoint = point;
+        radialDistance = 0f;
+        localRadius = wallRadius;
+
+        if (!TryGetNearestPoint(
+            point,
+            out nearestPoint,
+            out radialDistance,
+            out localRadius,
+            out int segmentIndex,
+            out float segmentT))
+        {
+            return false;
+        }
+
+        EnsureDistanceCache();
+        totalRouteLength = totalCenterlineLength;
+        if (cumulativeDistances == null || cumulativeDistances.Length != centerline.Length)
+        {
+            return false;
+        }
+
+        int a = Mathf.Clamp(segmentIndex, 0, cumulativeDistances.Length - 1);
+        int b = Mathf.Clamp(segmentIndex + 1, 0, cumulativeDistances.Length - 1);
+        distanceAlongRoute = Mathf.Lerp(cumulativeDistances[a], cumulativeDistances[b], Mathf.Clamp01(segmentT));
+        normalizedProgress = totalRouteLength > 1e-5f
+            ? Mathf.Clamp01(distanceAlongRoute / totalRouteLength)
+            : 0f;
+        return true;
+    }
+
+    public bool IsNearRouteEnd(Vector3 point, float radius)
+    {
+        if (centerline == null || centerline.Length == 0)
+        {
+            return false;
+        }
+
+        return Vector3.Distance(point, centerline[centerline.Length - 1]) <= Mathf.Max(0.01f, radius);
+    }
+
     public bool TryConstrainInside(Vector3 point, float probeRadius, out Vector3 constrainedPoint)
     {
         constrainedPoint = point;
@@ -105,9 +170,28 @@ public class IrairaBouTubeBoundary : MonoBehaviour
 
     bool TryGetNearestPoint(Vector3 point, out Vector3 nearestPoint, out float radialDistance, out float localRadius)
     {
+        return TryGetNearestPoint(
+            point,
+            out nearestPoint,
+            out radialDistance,
+            out localRadius,
+            out _,
+            out _);
+    }
+
+    bool TryGetNearestPoint(
+        Vector3 point,
+        out Vector3 nearestPoint,
+        out float radialDistance,
+        out float localRadius,
+        out int nearestSegment,
+        out float nearestSegmentT)
+    {
         nearestPoint = point;
         radialDistance = 0f;
         localRadius = wallRadius;
+        nearestSegment = 0;
+        nearestSegmentT = 0f;
 
         if (centerline == null || centerline.Length < 2)
         {
@@ -135,7 +219,44 @@ public class IrairaBouTubeBoundary : MonoBehaviour
         nearestPoint = bestPoint;
         radialDistance = Mathf.Sqrt(bestSqrDistance);
         localRadius = GetRadiusAtSegment(bestSegment, bestSegmentT);
+        nearestSegment = bestSegment;
+        nearestSegmentT = bestSegmentT;
         return true;
+    }
+
+    void EnsureDistanceCache()
+    {
+        if (centerline == null || centerline.Length < 2)
+        {
+            cumulativeDistances = new float[0];
+            totalCenterlineLength = 0f;
+            return;
+        }
+
+        if (cumulativeDistances == null
+            || cumulativeDistances.Length != centerline.Length
+            || totalCenterlineLength <= 0f)
+        {
+            RebuildDistanceCache();
+        }
+    }
+
+    void RebuildDistanceCache()
+    {
+        if (centerline == null || centerline.Length == 0)
+        {
+            cumulativeDistances = new float[0];
+            totalCenterlineLength = 0f;
+            return;
+        }
+
+        cumulativeDistances = new float[centerline.Length];
+        totalCenterlineLength = 0f;
+        for (int i = 1; i < centerline.Length; i++)
+        {
+            totalCenterlineLength += Vector3.Distance(centerline[i - 1], centerline[i]);
+            cumulativeDistances[i] = totalCenterlineLength;
+        }
     }
 
     float GetRadiusAtSegment(int segmentIndex, float t)

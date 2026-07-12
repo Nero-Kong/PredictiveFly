@@ -588,7 +588,7 @@ MonoBehaviour:
   flyLeanAngleDeg: 28
   prefabPitchAngleDeg: 18
   prefabRollAngleDeg: 24
-  prefabClimbPitchAngleDeg: 10
+  prefabClimbPitchAngleDeg: 0
   floatBoolParameter: Float
   sprintBoolParameter: Sprint
   ascendBoolParameter: Ascend

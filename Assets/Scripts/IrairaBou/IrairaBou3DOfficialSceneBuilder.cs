@@ -11,6 +11,14 @@ using UnityEngine.SpatialTracking;
 [DisallowMultipleComponent]
 public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 {
+    public enum CourseRouteVariant
+    {
+        Base,
+        MirrorHorizontal,
+        MirrorVertical,
+        MirrorHorizontalAndVertical
+    }
+
     const string GeneratedRootName = "__Generated_IrairaBou3D_Official";
     const string PredictiveRigName = "Predictive Drone XR Rig";
     const string LegacyRigName = "XRRig";
@@ -18,19 +26,35 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     const string DemoCameraName = "Main Camera - Keyboard Demo";
     const string TubeScaleRingRootName = "Tube Distance Scale Rings";
     const string TubeAvoidanceRootName = "Tube Avoidance Obstacles";
+    static readonly Color ExperimentFallbackBackgroundColor = new Color(0.008f, 0.011f, 0.016f, 1f);
 
     [Header("Build")]
     public bool buildOnEnable = true;
     public bool tubeOnlyScene = true;
     public int samplesPerCurveSegment = 8;
     [Min(0.1f)] public float courseLengthScale = 2f;
+    [Tooltip("Number of repeated cycles used by the lateral weave, vertical weave, helix, and mirrored helix sections.")]
+    [Range(1, 6)] public int repeatingSectionCycles = 3;
+    [Tooltip("Fraction of each helix used to ease angular motion at both ends and prevent pinched tube joints.")]
+    [Range(0.02f, 0.25f)] public float helixTransitionFraction = 0.12f;
+    [Tooltip("Preview/default route. The experiment controller overrides this from Participant ID and Trial Index when Enter is pressed.")]
+    public CourseRouteVariant routeVariant;
+
+    public string RouteId => $"Route_{(char)('A' + (int)routeVariant)}";
 
     [Header("Course Shape")]
     public float railOffset = 0.78f;
     public float railRadius = 0.055f;
     public float centerLineWidth = 0.085f;
+    [Tooltip("Fallback route-gate radius when no tube radius profile is available.")]
     public float checkpointRadius = 0.92f;
     public float checkpointTubeRadius = 0.045f;
+    [Tooltip("Distance between a route-gate ring and the tube wall.")]
+    [Min(0f)] public float routeGateWallInset = 0.12f;
+    [Tooltip("Additional radial margin inside the drone's reachable tube area for route-gate triggers.")]
+    [Min(0f)] public float routeGateEdgeMargin = 0.08f;
+    [Tooltip("Thickness of the full-width checkpoint and finish trigger planes.")]
+    [Min(0.02f)] public float routeGateTriggerDepth = 0.12f;
     public float probeRadius = 0.16f;
     public bool createTransparentOuterTube = true;
     public float outerTubeRadius = 3.92f;
@@ -60,13 +84,27 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     [Min(0.01f)] public float predictiveRigCollisionRadius = 0.22f;
     [Min(0f)] public float predictiveRigCollisionSkinWidth = 0.03f;
 
+    [Header("Planar Translation")]
+    [Min(0f)] public float planarHorizontalSpeed = 5f;
+    [Min(0f)] public float planarDeadZone = 0.012f;
+    [Min(0.001f)] public float planarMaxOffset = 0.085f;
+    [Min(0.1f)] public float planarResponseExponent = 0.9f;
+    [Min(0f)] public float planarSmoothing = 18f;
+
+    [Header("Drone Main Shell")]
+    [Tooltip("Scale only the red renderer on the drone prefab root; child visuals and animation keep their original scale.")]
+    [Range(0f, 1f)] public float droneMainShellScale = 0.6f;
+
     [ContextMenu("Rebuild Official 3D Iraira-Bou Scene")]
     public void RebuildScene()
     {
+        EnsureExperimentComponents();
         ClearLegacyRootObjects();
         ClearGeneratedRoot();
 
-        Transform root = CreateEmpty(GeneratedRootName, transform).transform;
+        GameObject generatedRoot = CreateEmpty(GeneratedRootName, transform);
+        generatedRoot.SetActive(false);
+        Transform root = generatedRoot.transform;
         root.localPosition = Vector3.zero;
         root.localRotation = Quaternion.identity;
         root.localScale = Vector3.one;
@@ -75,12 +113,15 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         Material tubeScaleRingMaterial = CreateMaterial("Official_Tube_Scale_Ring_Cyan", new Color(0.22f, 0.9f, 1f, 1f), 2.2f);
         Material tubeScaleMajorRingMaterial = CreateMaterial("Official_Tube_Scale_Ring_Major", new Color(1f, 0.86f, 0.38f, 1f), 2.8f);
         Material tubeObstacleMaterial = CreateMaterial("Official_Tube_Avoidance_Obstacle_Amber", new Color(1f, 0.42f, 0.1f, 1f), 2.6f);
+        Material checkpointMaterial = CreateMaterial("Official_Checkpoint_Yellow", new Color(1f, 0.82f, 0.18f, 1f), 1.6f);
+        Material finishMaterial = CreateMaterial("Official_Finish_Green", new Color(0.18f, 1f, 0.48f, 1f), 1.8f);
 
         List<Vector3> path = BuildPathSamples();
         CreateLightingAndCamera(root, !createPredictiveDroneRig);
         List<float> tubeRadiusProfile = CreateTransparentOuterTube(path, root, outerTubeMaterial);
         CreateTubeScaleRings(path, tubeRadiusProfile, root, tubeScaleRingMaterial, tubeScaleMajorRingMaterial);
         CreateTubeAvoidanceObstacles(path, tubeRadiusProfile, root, tubeObstacleMaterial);
+        CreateCheckpoints(path, tubeRadiusProfile, root, checkpointMaterial, finishMaterial);
 
         if (!tubeOnlyScene)
         {
@@ -88,30 +129,31 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             Material centerMaterial = CreateMaterial("Official_Cyan_Center_Path", new Color(0.05f, 0.85f, 1f, 1f), 2.5f);
             Material hazardMaterial = CreateMaterial("Official_Red_Electric_Hazard", new Color(1f, 0.08f, 0.04f, 1f), 3.2f);
             Material jointMaterial = CreateMaterial("Official_Hazard_Joints", new Color(1f, 0.25f, 0.08f, 1f), 2f);
-            Material checkpointMaterial = CreateMaterial("Official_Checkpoint_Yellow", new Color(1f, 0.82f, 0.18f, 1f), 1.6f);
             Material startMaterial = CreateMaterial("Official_Start_Blue", new Color(0.1f, 0.38f, 1f, 1f), 1.3f);
-            Material finishMaterial = CreateMaterial("Official_Finish_Green", new Color(0.18f, 1f, 0.48f, 1f), 1.8f);
 
             CreateEnvironment(root, floorMaterial);
             CreateCenterLine(path, root, centerMaterial);
             CreateElectricRails(path, root, hazardMaterial, jointMaterial);
-            CreateCheckpoints(path, root, checkpointMaterial, finishMaterial);
             CreatePrecisionGates(path, root, hazardMaterial);
             CreateStartAndFinish(path, root, startMaterial, finishMaterial);
             CreateLabels(path, root);
         }
 
         CreatePredictiveDroneRig(path, root);
+        ConfigureExperimentComponents(root);
 
         if (createKeyboardDemoProbe && !tubeOnlyScene)
         {
             Material probeMaterial = CreateMaterial("Official_Probe_White", new Color(0.9f, 1f, 1f, 1f), 1.5f);
             CreateDemoProbe(path[0], root, probeMaterial);
         }
+
+        generatedRoot.SetActive(true);
     }
 
     void OnEnable()
     {
+        EnsureExperimentComponents();
         if (!buildOnEnable)
         {
             return;
@@ -121,7 +163,10 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         if (generatedRoot == null || HasLegacyRootObjects() || ShouldRebuildGeneratedRoot(generatedRoot))
         {
             RebuildScene();
+            return;
         }
+
+        ConfigureExperimentComponents(generatedRoot);
     }
 
     bool ShouldRebuildGeneratedRoot(Transform generatedRoot)
@@ -213,17 +258,32 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             }
         }
 
+        if (generatedRoot.GetComponentInChildren<IrairaBouCheckpoint>() == null
+            || generatedRoot.GetComponentInChildren<IrairaBouFinish>() == null)
+        {
+            return true;
+        }
+
+        if (!HasFullWidthRouteGates(generatedRoot))
+        {
+            return true;
+        }
+
         return false;
     }
 
     void OnValidate()
     {
         samplesPerCurveSegment = Mathf.Clamp(samplesPerCurveSegment, 3, 24);
+        repeatingSectionCycles = Mathf.Clamp(repeatingSectionCycles, 1, 6);
         railOffset = Mathf.Max(0.2f, railOffset);
         railRadius = Mathf.Max(0.01f, railRadius);
         centerLineWidth = Mathf.Max(0.01f, centerLineWidth);
         checkpointRadius = Mathf.Max(0.25f, checkpointRadius);
         checkpointTubeRadius = Mathf.Max(0.01f, checkpointTubeRadius);
+        routeGateWallInset = Mathf.Max(0f, routeGateWallInset);
+        routeGateEdgeMargin = Mathf.Max(0f, routeGateEdgeMargin);
+        routeGateTriggerDepth = Mathf.Max(0.02f, routeGateTriggerDepth);
         probeRadius = Mathf.Max(0.03f, probeRadius);
         outerTubeRadius = Mathf.Max(railOffset + railRadius * 2f, outerTubeRadius);
         narrowTubeRadiusMultiplier = Mathf.Clamp(narrowTubeRadiusMultiplier, 0.2f, 1f);
@@ -235,9 +295,24 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         tubeAvoidanceObstacleRadius = Mathf.Clamp(tubeAvoidanceObstacleRadius, 0.1f, 1.5f);
         tubeAvoidanceObstacleOffsetFraction = Mathf.Clamp(tubeAvoidanceObstacleOffsetFraction, 0.05f, 0.9f);
         courseLengthScale = Mathf.Max(0.1f, courseLengthScale);
+        helixTransitionFraction = Mathf.Clamp(helixTransitionFraction, 0.02f, 0.25f);
         expectedEyeHeight = Mathf.Max(0f, expectedEyeHeight);
         predictiveRigCollisionRadius = Mathf.Max(0.01f, predictiveRigCollisionRadius);
         predictiveRigCollisionSkinWidth = Mathf.Max(0f, predictiveRigCollisionSkinWidth);
+        planarHorizontalSpeed = Mathf.Max(0f, planarHorizontalSpeed);
+        planarDeadZone = Mathf.Max(0f, planarDeadZone);
+        planarMaxOffset = Mathf.Max(planarDeadZone + 0.001f, planarMaxOffset);
+        planarResponseExponent = Mathf.Max(0.1f, planarResponseExponent);
+        planarSmoothing = Mathf.Max(0f, planarSmoothing);
+        droneMainShellScale = Mathf.Clamp01(droneMainShellScale);
+        Transform generatedRoot = transform.Find(GeneratedRootName);
+        if (generatedRoot != null)
+        {
+            ConfigurePlanarTranslation(
+                generatedRoot.GetComponentInChildren<PredictiveGhostAvatarLocomotion>(true));
+            ConfigureDroneMainShellScale(
+                generatedRoot.GetComponentInChildren<GhostAvatarAnimationDriver>(true));
+        }
     }
 
     List<Vector3> BuildPathSamples()
@@ -246,6 +321,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         Vector3 position = anchor;
         Vector3 direction = Vector3.forward;
         int baseSteps = Mathf.Max(6, samplesPerCurveSegment);
+        int cycles = Mathf.Clamp(repeatingSectionCycles, 1, 6);
 
         List<Vector3> rawSamples = new List<Vector3>();
         rawSamples.Add(position);
@@ -253,19 +329,35 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         AppendStraight(rawSamples, ref position, direction, 10f, 0f, baseSteps);
         AppendStraight(rawSamples, ref position, direction, 14f, 0f, baseSteps);
         AppendStraight(rawSamples, ref position, direction, 16f, 0f, baseSteps * 2);
-        AppendLateralWeave(rawSamples, ref position, direction, 24f, 2.2f, 2f, baseSteps * 8);
-        AppendVerticalWeave(rawSamples, ref position, direction, 22f, 1.8f, 2f, baseSteps * 8);
-        AppendForwardHelix(rawSamples, ref position, direction, 28f, 3.6f, 0f, baseSteps * 10, 2f);
-        AppendForwardHelix(rawSamples, ref position, direction, 24f, 3.6f, 0f, baseSteps * 8, -2f);
+        AppendLateralWeave(rawSamples, ref position, direction, 24f, 2.2f, cycles, baseSteps * 4 * cycles);
+        AppendVerticalWeave(rawSamples, ref position, direction, 22f, 1.8f, cycles, baseSteps * 4 * cycles);
+        AppendForwardHelix(rawSamples, ref position, direction, 28f, 3.6f, 0f, baseSteps * 5 * cycles, cycles);
+        AppendForwardHelix(rawSamples, ref position, direction, 24f, 3.6f, 0f, baseSteps * 4 * cycles, -cycles);
         AppendStraight(rawSamples, ref position, direction, 16f, 0f, baseSteps);
 
         List<Vector3> scaledSamples = new List<Vector3>(rawSamples.Count);
         for (int i = 0; i < rawSamples.Count; i++)
         {
-            scaledSamples.Add(ScalePathPoint(rawSamples[i], anchor));
+            scaledSamples.Add(ApplyRouteVariant(ScalePathPoint(rawSamples[i], anchor), anchor));
         }
 
         return scaledSamples;
+    }
+
+    Vector3 ApplyRouteVariant(Vector3 point, Vector3 anchor)
+    {
+        Vector3 delta = point - anchor;
+        if (routeVariant == CourseRouteVariant.MirrorHorizontal
+            || routeVariant == CourseRouteVariant.MirrorHorizontalAndVertical)
+        {
+            delta.x = -delta.x;
+        }
+        if (routeVariant == CourseRouteVariant.MirrorVertical
+            || routeVariant == CourseRouteVariant.MirrorHorizontalAndVertical)
+        {
+            delta.y = -delta.y;
+        }
+        return anchor + delta;
     }
 
     void AppendStraight(List<Vector3> samples, ref Vector3 position, Vector3 direction, float length, float heightDelta, int steps)
@@ -382,13 +474,39 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         for (int i = 1; i <= steps; i++)
         {
             float t = i / (float)steps;
-            float angle = t * Mathf.PI * 2f * turns;
+            float angleProgress = SmoothHelixProgress(t, helixTransitionFraction);
+            float angle = angleProgress * Mathf.PI * 2f * turns;
             Vector3 axisPoint = axisStart + axisDelta * t;
             Vector3 radial = Mathf.Cos(angle) * radialU + Mathf.Sin(angle) * radialV;
             AddPathPoint(samples, axisPoint + radial * radius);
         }
 
         position = samples[samples.Count - 1];
+    }
+
+    static float SmoothHelixProgress(float t, float transitionFraction)
+    {
+        t = Mathf.Clamp01(t);
+        float edge = Mathf.Clamp(transitionFraction, 0.001f, 0.49f);
+        float normalization = 1f - edge;
+
+        if (t < edge)
+        {
+            float u = t / edge;
+            float u2 = u * u;
+            float integratedSmoothStep = u2 * u - 0.5f * u2 * u2;
+            return edge * integratedSmoothStep / normalization;
+        }
+
+        if (t > 1f - edge)
+        {
+            float u = (1f - t) / edge;
+            float u2 = u * u;
+            float integratedSmoothStep = u2 * u - 0.5f * u2 * u2;
+            return 1f - edge * integratedSmoothStep / normalization;
+        }
+
+        return (t - edge * 0.5f) / normalization;
     }
 
     static void AddPathPoint(List<Vector3> samples, Vector3 point)
@@ -450,6 +568,8 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         camera.fieldOfView = 50f;
         camera.nearClipPlane = 0.03f;
         camera.farClipPlane = 200f;
+        camera.clearFlags = CameraClearFlags.Skybox;
+        camera.backgroundColor = ExperimentFallbackBackgroundColor;
         cameraObject.AddComponent<AudioListener>();
         TrySetTag(cameraObject, "MainCamera");
     }
@@ -574,7 +694,9 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             Vector3 tangent = SampleTangentAtSegment(path, segmentIndex);
             GetTubeBasis(tangent, out Vector3 side, out Vector3 tubeUp);
 
-            float wallRadius = SampleRadiusAtDistance(radiusProfile, distances, targetDistance, segmentIndex, segmentT);
+            float wallRadius = radiusProfile != null && radiusProfile.Count > 0
+                ? SampleRadiusAtDistance(radiusProfile, distances, targetDistance, segmentIndex, segmentT)
+                : checkpointRadius + routeGateWallInset;
             float obstacleRadius = Mathf.Min(
                 Mathf.Max(0.1f, tubeAvoidanceObstacleRadius * radiusMultipliers[i]),
                 Mathf.Max(0.1f, wallRadius * 0.24f));
@@ -624,26 +746,89 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         }
     }
 
-    void CreateCheckpoints(List<Vector3> path, Transform root, Material checkpointMaterial, Material finishMaterial)
+    void CreateCheckpoints(
+        List<Vector3> path,
+        List<float> radiusProfile,
+        Transform root,
+        Material checkpointMaterial,
+        Material finishMaterial)
     {
         Transform checkpointRoot = CreateEmpty("Checkpoints And Finish", root).transform;
+        float[] distances = BuildCumulativeDistances(path, out float totalDistance);
         float[] percents = { 0.18f, 0.36f, 0.54f, 0.72f };
         for (int i = 0; i < percents.Length; i++)
         {
-            int index = Mathf.Clamp(Mathf.RoundToInt((path.Count - 1) * percents[i]), 1, path.Count - 2);
-            GameObject ring = CreateRing($"Checkpoint {i + 1}", path[index], GetTangent(path, index), checkpointRadius, checkpointTubeRadius, checkpointRoot, checkpointMaterial);
-            SphereCollider trigger = ring.AddComponent<SphereCollider>();
-            trigger.isTrigger = true;
-            trigger.radius = checkpointRadius * 0.8f;
+            float targetDistance = totalDistance * percents[i];
+            Vector3 center = SamplePathAtDistance(path, distances, targetDistance, out int segmentIndex, out float segmentT);
+            Vector3 tangent = SampleTangentAtSegment(path, segmentIndex);
+            float wallRadius = SampleRadiusAtDistance(radiusProfile, distances, targetDistance, segmentIndex, segmentT);
+            float ringRadius = GetRouteGateRingRadius(wallRadius);
+            GameObject ring = CreateRing($"Checkpoint {i + 1}", center, tangent, ringRadius, checkpointTubeRadius, checkpointRoot, checkpointMaterial);
+            CreateFullWidthRouteGateTrigger(ring, tangent, wallRadius);
             IrairaBouCheckpoint checkpoint = ring.AddComponent<IrairaBouCheckpoint>();
             checkpoint.index = i + 1;
         }
 
-        GameObject finish = CreateRing("Finish Trigger Ring", path[path.Count - 1], GetTangent(path, path.Count - 2), checkpointRadius * 1.05f, checkpointTubeRadius * 1.2f, checkpointRoot, finishMaterial);
-        SphereCollider finishTrigger = finish.AddComponent<SphereCollider>();
-        finishTrigger.isTrigger = true;
-        finishTrigger.radius = checkpointRadius * 0.85f;
+        int finishIndex = path.Count - 1;
+        Vector3 finishTangent = GetTangent(path, path.Count - 2);
+        float finishWallRadius = radiusProfile != null && radiusProfile.Count > 0
+            ? radiusProfile[Mathf.Clamp(finishIndex, 0, radiusProfile.Count - 1)]
+            : outerTubeRadius;
+        GameObject finish = CreateRing(
+            "Finish Trigger Ring",
+            path[finishIndex],
+            finishTangent,
+            GetRouteGateRingRadius(finishWallRadius),
+            checkpointTubeRadius * 1.2f,
+            checkpointRoot,
+            finishMaterial);
+        CreateFullWidthRouteGateTrigger(finish, finishTangent, finishWallRadius);
         finish.AddComponent<IrairaBouFinish>();
+    }
+
+    float GetRouteGateRingRadius(float wallRadius)
+    {
+        float inset = Mathf.Max(routeGateWallInset, checkpointTubeRadius * 1.5f);
+        return Mathf.Max(0.1f, wallRadius - inset);
+    }
+
+    void CreateFullWidthRouteGateTrigger(GameObject marker, Vector3 tangent, float wallRadius)
+    {
+        GameObject triggerObject = CreateEmpty("Full-Width Route Gate Trigger", marker.transform);
+        triggerObject.transform.localPosition = Vector3.zero;
+        GetTubeBasis(tangent, out _, out Vector3 tubeUp);
+        Vector3 forward = tangent.sqrMagnitude > 1e-6f ? tangent.normalized : Vector3.forward;
+        triggerObject.transform.rotation = Quaternion.LookRotation(forward, tubeUp);
+
+        float halfExtent = Mathf.Max(
+            0.1f,
+            wallRadius
+                - predictiveRigCollisionRadius
+                - predictiveRigCollisionSkinWidth
+                - routeGateEdgeMargin);
+        BoxCollider trigger = triggerObject.AddComponent<BoxCollider>();
+        trigger.isTrigger = true;
+        trigger.size = new Vector3(halfExtent * 2f, halfExtent * 2f, routeGateTriggerDepth);
+    }
+
+    static bool HasFullWidthRouteGates(Transform generatedRoot)
+    {
+        IrairaBouCheckpoint[] checkpoints = generatedRoot.GetComponentsInChildren<IrairaBouCheckpoint>(true);
+        if (checkpoints.Length != 4)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < checkpoints.Length; i++)
+        {
+            if (checkpoints[i].GetComponentInChildren<BoxCollider>(true) == null)
+            {
+                return false;
+            }
+        }
+
+        IrairaBouFinish finish = generatedRoot.GetComponentInChildren<IrairaBouFinish>(true);
+        return finish != null && finish.GetComponentInChildren<BoxCollider>(true) != null;
     }
 
     void CreatePrecisionGates(List<Vector3> path, Transform root, Material hazardMaterial)
@@ -760,6 +945,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         camera.farClipPlane = 200f;
         camera.fieldOfView = 60f;
         camera.clearFlags = CameraClearFlags.Skybox;
+        camera.backgroundColor = ExperimentFallbackBackgroundColor;
         cameraObject.AddComponent<AudioListener>();
 
         TrackedPoseDriver trackedPoseDriver = cameraObject.AddComponent<TrackedPoseDriver>();
@@ -781,6 +967,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         ghostDriver.disablePrefabCamerasAndLights = true;
         ghostDriver.applyGhostMaterialToPrefab = true;
         ghostDriver.preservePrefabMaterialTextures = true;
+        ConfigureDroneMainShellScale(ghostDriver);
         ghostDriver.proceduralVisualShape = GhostAvatarAnimationDriver.ProceduralVisualShape.Drone;
         ghostDriver.enablePrefabMotionFallback = true;
         ghostDriver.ghostColor = new Color(0.18f, 0.8f, 1f, 1f);
@@ -799,10 +986,113 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         locomotion.useHeadAsCollisionProbe = true;
         locomotion.collisionProbeRadius = predictiveRigCollisionRadius;
         locomotion.collisionSkinWidth = predictiveRigCollisionSkinWidth;
-        locomotion.tubeBoundary = root.GetComponentInChildren<IrairaBouTubeBoundary>();
+        locomotion.tubeBoundary = root.GetComponentInChildren<IrairaBouTubeBoundary>(true);
         locomotion.autoFindTubeBoundary = true;
+        ConfigurePlanarTranslation(locomotion);
 
         ghostDriver.locomotion = locomotion;
+    }
+
+    void EnsureExperimentComponents()
+    {
+        PredictiveFlyObjectiveLogger logger = GetComponent<PredictiveFlyObjectiveLogger>();
+        if (logger == null)
+        {
+            logger = gameObject.AddComponent<PredictiveFlyObjectiveLogger>();
+        }
+
+        PredictiveFlyExperimentController controller = GetComponent<PredictiveFlyExperimentController>();
+        if (controller == null)
+        {
+            controller = gameObject.AddComponent<PredictiveFlyExperimentController>();
+        }
+        controller.enabled = true;
+
+        PredictiveFlyRouteMarkerVisualizer legacyMarkerVisualizer = GetComponent<PredictiveFlyRouteMarkerVisualizer>();
+        if (legacyMarkerVisualizer != null)
+        {
+            legacyMarkerVisualizer.enabled = false;
+        }
+
+        controller.sceneBuilder = this;
+        controller.logger = logger;
+        logger.useKeyboardControls = false;
+        logger.stopOnFinish = true;
+        logger.stopOnModeChange = true;
+        logger.routeId = RouteId;
+    }
+
+    void ConfigureExperimentComponents(Transform generatedRoot)
+    {
+        EnsureExperimentComponents();
+
+        PredictiveFlyObjectiveLogger logger = GetComponent<PredictiveFlyObjectiveLogger>();
+        PredictiveFlyExperimentController controller = GetComponent<PredictiveFlyExperimentController>();
+        PredictiveGhostAvatarLocomotion locomotion = generatedRoot != null
+            ? generatedRoot.GetComponentInChildren<PredictiveGhostAvatarLocomotion>(true)
+            : null;
+        GhostAvatarAnimationDriver ghostDriver = generatedRoot != null
+            ? generatedRoot.GetComponentInChildren<GhostAvatarAnimationDriver>(true)
+            : null;
+        IrairaBouTubeBoundary boundary = generatedRoot != null
+            ? generatedRoot.GetComponentInChildren<IrairaBouTubeBoundary>(true)
+            : null;
+
+        if (logger != null)
+        {
+            logger.locomotion = locomotion;
+            logger.rigRoot = locomotion != null ? locomotion.targetRig : null;
+            logger.head = locomotion != null ? locomotion.head : null;
+            logger.probe = locomotion != null && locomotion.collisionProbe != null
+                ? locomotion.collisionProbe
+                : logger.head;
+            logger.droneBodyAvatar = locomotion != null ? locomotion.droneBodyAvatar : null;
+            logger.stateGhostAvatar = locomotion != null ? locomotion.stateGhostAvatar : null;
+            logger.tubeBoundary = boundary;
+            logger.routeId = RouteId;
+            if (locomotion != null)
+            {
+                logger.probeRadius = locomotion.collisionProbeRadius;
+                logger.contactTolerance = Mathf.Max(
+                    logger.contactTolerance,
+                    locomotion.collisionSkinWidth + 0.005f);
+            }
+        }
+
+        if (controller != null)
+        {
+            controller.sceneBuilder = this;
+            controller.logger = logger;
+            controller.locomotion = locomotion;
+        }
+
+        ConfigurePlanarTranslation(locomotion);
+        ConfigureDroneMainShellScale(ghostDriver);
+
+    }
+
+    void ConfigurePlanarTranslation(PredictiveGhostAvatarLocomotion locomotion)
+    {
+        if (locomotion == null)
+        {
+            return;
+        }
+
+        locomotion.horizontalSpeed = planarHorizontalSpeed;
+        locomotion.planarDeadZone = planarDeadZone;
+        locomotion.planarMaxOffset = Mathf.Max(planarDeadZone + 0.001f, planarMaxOffset);
+        locomotion.planarResponseExponent = planarResponseExponent;
+        locomotion.planarSmoothing = planarSmoothing;
+    }
+
+    void ConfigureDroneMainShellScale(GhostAvatarAnimationDriver driver)
+    {
+        if (driver == null)
+        {
+            return;
+        }
+
+        driver.prefabMainShellScale = droneMainShellScale;
     }
 
     GameObject CreateRing(string name, Vector3 center, Vector3 forward, float radius, float tubeRadius, Transform parent, Material material)
@@ -1399,7 +1689,6 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             || root.Find("Low Contrast Reference Wall") != null
             || root.Find("Safe Center Trajectory - LineRenderer") != null
             || root.Find("Electric Collision Rails") != null
-            || root.Find("Checkpoints And Finish") != null
             || root.Find("Official Primitive Bonus Hazards") != null
             || root.Find("Start Finish Platforms") != null
             || root.Find("Floating Labels") != null

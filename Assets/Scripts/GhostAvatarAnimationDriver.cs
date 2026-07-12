@@ -41,6 +41,10 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     [Min(0f)] public float visualAlphaPulse = 0.08f;
     [Min(0f)] public float visualAlphaPulseFrequency = 1.4f;
 
+    [Header("Prefab Main Shell")]
+    [Tooltip("Uniform scale applied only to the renderer attached to the prefab root. Child visuals keep their original scale.")]
+    [Range(0f, 1f)] public float prefabMainShellScale = 0.6f;
+
     [Header("Animation Response")]
     [Min(0.01f)] public float activeSpeedReference = 2.5f;
     [Min(0.01f)] public float verticalSpeedReference = 1.5f;
@@ -50,7 +54,7 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     [Min(0f)] public float flyLeanAngleDeg = 28f;
     [Min(0f)] public float prefabPitchAngleDeg = 18f;
     [Min(0f)] public float prefabRollAngleDeg = 24f;
-    [Min(0f)] public float prefabClimbPitchAngleDeg = 10f;
+    [Min(0f)] public float prefabClimbPitchAngleDeg = 0f;
 
     [Header("Animator Parameters")]
     public string floatBoolParameter = "Float";
@@ -71,6 +75,7 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
     [SerializeField] bool prefabHasCompatibleMotionBehaviours;
 
     const string VisualRootName = "__PredictiveGhostAvatarVisual";
+    const string ScaledMainShellName = "__ScaledMainShellVisual";
     static readonly string[] UnsafePrefabBehaviourTokens =
     {
         "agent",
@@ -168,10 +173,29 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
             return;
         }
 
+        Renderer sourceMainShellRenderer = root.GetComponent<Renderer>();
+        Transform scaledMainShell = root.Find(ScaledMainShellName);
+        Renderer scaledMainShellRenderer = scaledMainShell != null
+            ? scaledMainShell.GetComponent<Renderer>()
+            : null;
+        float shellScale = Mathf.Clamp01(prefabMainShellScale);
+        bool useScaledMainShell = shellScale > 0.001f && shellScale < 0.999f;
         Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
         for (int i = 0; i < renderers.Length; i++)
         {
-            renderers[i].enabled = visible;
+            Renderer renderer = renderers[i];
+            if (renderer == sourceMainShellRenderer)
+            {
+                renderer.enabled = visible && shellScale >= 0.999f;
+            }
+            else if (renderer == scaledMainShellRenderer)
+            {
+                renderer.enabled = visible && useScaledMainShell;
+            }
+            else
+            {
+                renderer.enabled = visible;
+            }
         }
     }
 
@@ -183,7 +207,8 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
         ApplyGhostMaterialColor(ghostColor);
         for (int i = 0; i < transparentPrefabMaterials.Count; i++)
         {
-            ApplyTransparentAlphaToMaterial(transparentPrefabMaterials[i], ghostColor.a);
+            Material material = transparentPrefabMaterials[i];
+            ApplyTransparentAlphaToMaterial(material, ghostColor.a);
         }
     }
 
@@ -277,6 +302,7 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
         if (GetVisualRoot() != null)
         {
             usingPrefabVisual = true;
+            ConfigurePrefabMainShell();
             if (animator == null)
             {
                 animator = visualRoot.GetComponentInChildren<Animator>(true);
@@ -304,6 +330,7 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
         visualRoot.localScale = visualLocalScale * visualScale;
 
         DisablePrefabGameplayComponents(visualRoot);
+        ConfigurePrefabMainShell();
 
         animator = visualRoot.GetComponentInChildren<Animator>(true);
         if (animator != null && animatorController != null)
@@ -515,6 +542,63 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
                 renderer.sharedMaterials = materials;
             }
         }
+
+    }
+
+    void ConfigurePrefabMainShell()
+    {
+        if (!usingPrefabVisual || visualRoot == null)
+        {
+            return;
+        }
+
+        MeshFilter sourceFilter = visualRoot.GetComponent<MeshFilter>();
+        MeshRenderer sourceRenderer = visualRoot.GetComponent<MeshRenderer>();
+        if (sourceFilter == null || sourceRenderer == null)
+        {
+            return;
+        }
+
+        float shellScale = Mathf.Clamp01(prefabMainShellScale);
+        Transform scaledShellTransform = visualRoot.Find(ScaledMainShellName);
+        if (shellScale <= 0.001f || shellScale >= 0.999f)
+        {
+            sourceRenderer.enabled = shellScale >= 0.999f;
+            if (scaledShellTransform != null)
+            {
+                Renderer existingRenderer = scaledShellTransform.GetComponent<Renderer>();
+                if (existingRenderer != null)
+                {
+                    existingRenderer.enabled = false;
+                }
+            }
+            return;
+        }
+
+        if (scaledShellTransform == null)
+        {
+            GameObject scaledShell = new GameObject(ScaledMainShellName);
+            scaledShellTransform = scaledShell.transform;
+            scaledShellTransform.SetParent(visualRoot, false);
+            scaledShell.AddComponent<MeshFilter>();
+            scaledShell.AddComponent<MeshRenderer>();
+        }
+
+        scaledShellTransform.localPosition = Vector3.zero;
+        scaledShellTransform.localRotation = Quaternion.identity;
+        scaledShellTransform.localScale = Vector3.one * shellScale;
+
+        MeshFilter scaledFilter = scaledShellTransform.GetComponent<MeshFilter>();
+        MeshRenderer scaledRenderer = scaledShellTransform.GetComponent<MeshRenderer>();
+        scaledFilter.sharedMesh = sourceFilter.sharedMesh;
+        scaledRenderer.sharedMaterials = sourceRenderer.sharedMaterials;
+        scaledRenderer.shadowCastingMode = sourceRenderer.shadowCastingMode;
+        scaledRenderer.receiveShadows = sourceRenderer.receiveShadows;
+        scaledRenderer.lightProbeUsage = sourceRenderer.lightProbeUsage;
+        scaledRenderer.reflectionProbeUsage = sourceRenderer.reflectionProbeUsage;
+        scaledRenderer.renderingLayerMask = sourceRenderer.renderingLayerMask;
+        scaledRenderer.enabled = true;
+        sourceRenderer.enabled = false;
     }
 
     void EnsureProceduralVisual()
@@ -773,7 +857,7 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
                 float climb01 = verticalSpeedReference <= 0f
                     ? 0f
                     : Mathf.Clamp(localVelocity.y / verticalSpeedReference, -1f, 1f);
-                float pitch = (-smoothedFlyZ * prefabPitchAngleDeg) + (climb01 * prefabClimbPitchAngleDeg);
+                float pitch = (smoothedFlyZ * prefabPitchAngleDeg) + (climb01 * prefabClimbPitchAngleDeg);
                 float roll = -smoothedFlyX * prefabRollAngleDeg;
                 motionRotation = Quaternion.Euler(pitch, 0f, roll);
             }
@@ -801,7 +885,8 @@ public class GhostAvatarAnimationDriver : MonoBehaviour
 
         for (int i = 0; i < transparentPrefabMaterials.Count; i++)
         {
-            ApplyTransparentAlphaToMaterial(transparentPrefabMaterials[i], color.a);
+            Material material = transparentPrefabMaterials[i];
+            ApplyTransparentAlphaToMaterial(material, color.a);
         }
     }
 
