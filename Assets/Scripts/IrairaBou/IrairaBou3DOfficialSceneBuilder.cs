@@ -26,6 +26,10 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     const string DemoCameraName = "Main Camera - Keyboard Demo";
     const string TubeScaleRingRootName = "Tube Distance Scale Rings";
     const string TubeAvoidanceRootName = "Tube Avoidance Obstacles";
+    const string OuterTubeMaterialName = "Official_Transparent_Outer_Glass_Tube";
+    const string TubeFresnelShaderName = "PredictiveFly/Fresnel Directional Tube";
+    const string DirectionalTubeMeshName = "Generated_Hollow_IrairaBou_Tube_DirectionalV2";
+    const int CurrentCourseVisibilityVersion = 1;
     static readonly Color ExperimentFallbackBackgroundColor = new Color(0.008f, 0.011f, 0.016f, 1f);
 
     [Header("Build")]
@@ -60,11 +64,23 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     public float outerTubeRadius = 3.92f;
     [Range(0.2f, 1f)] public float narrowTubeRadiusMultiplier = 0.55f;
     [Range(1f, 2f)] public float expandedTubeRadiusMultiplier = 1.25f;
-    [Range(0.02f, 0.6f)] public float outerTubeAlpha = 0.18f;
+    [Range(0.02f, 0.6f)] public float outerTubeAlpha = 0.14f;
     [Min(12)] public int outerTubeRadialSegments = 48;
+    [Tooltip("Shader used for the Fresnel wall and embedded direction guides.")]
+    public Shader outerTubeFresnelShader;
+    [ColorUsage(true, true)] public Color outerTubeFresnelColor = new Color(0.5f, 0.95f, 1f, 1f);
+    [Range(0f, 0.8f)] public float outerTubeFresnelAlpha = 0.28f;
+    [Range(0.5f, 8f)] public float outerTubeFresnelPower = 2.2f;
+    [ColorUsage(true, true)] public Color tubeTopGuideColor = new Color(0.92f, 0.98f, 1f, 1f);
+    [ColorUsage(true, true)] public Color tubeSideGuideColor = new Color(0.16f, 0.82f, 1f, 1f);
+    [Range(0f, 1f)] public float tubeGuideAlpha = 0.78f;
+    [Range(0.001f, 0.02f)] public float tubeGuideAngularHalfWidth = 0.003f;
+    [Min(0.25f)] public float tubeSideGuideDashPeriod = 4f;
+    [Range(0.1f, 0.9f)] public float tubeSideGuideDashDuty = 0.55f;
+    [SerializeField, HideInInspector] int courseVisibilityVersion;
     public bool createTubeScaleRings = true;
-    [Min(0.5f)] public float tubeScaleRingSpacing = 8f;
-    [Min(0.005f)] public float tubeScaleRingTubeRadius = 0.035f;
+    [Min(0.5f)] public float tubeScaleRingSpacing = 6f;
+    [Min(0.005f)] public float tubeScaleRingTubeRadius = 0.05f;
     [Min(0f)] public float tubeScaleRingInset = 0.08f;
     public bool createTubeAvoidanceObstacles = true;
     [Range(0.1f, 1.5f)] public float tubeAvoidanceObstacleRadius = 0.65f;
@@ -109,7 +125,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         root.localRotation = Quaternion.identity;
         root.localScale = Vector3.one;
 
-        Material outerTubeMaterial = CreateTransparentMaterial("Official_Transparent_Outer_Glass_Tube", new Color(0.55f, 0.9f, 1f, outerTubeAlpha), 0.6f);
+        Material outerTubeMaterial = CreateTransparentMaterial(OuterTubeMaterialName, GetOuterTubeColor(), 0.6f);
         Material tubeScaleRingMaterial = CreateMaterial("Official_Tube_Scale_Ring_Cyan", new Color(0.22f, 0.9f, 1f, 1f), 2.2f);
         Material tubeScaleMajorRingMaterial = CreateMaterial("Official_Tube_Scale_Ring_Major", new Color(1f, 0.86f, 0.38f, 1f), 2.8f);
         Material tubeObstacleMaterial = CreateMaterial("Official_Tube_Avoidance_Obstacle_Amber", new Color(1f, 0.42f, 0.1f, 1f), 2.6f);
@@ -151,8 +167,165 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         generatedRoot.SetActive(true);
     }
 
+    public void NormalizeCourseVisualMaterials()
+    {
+        Transform generatedRoot = transform.Find(GeneratedRootName);
+        if (generatedRoot == null)
+        {
+            return;
+        }
+
+        IrairaBouTubeBoundary tubeBoundary = generatedRoot.GetComponentInChildren<IrairaBouTubeBoundary>(true);
+        Renderer tubeRenderer = tubeBoundary != null ? tubeBoundary.GetComponent<Renderer>() : null;
+        if (tubeRenderer == null)
+        {
+            return;
+        }
+
+        EnsureTubeVisualMesh(tubeBoundary);
+        Material[] materials = tubeRenderer.sharedMaterials;
+        for (int materialIndex = 0; materialIndex < materials.Length; materialIndex++)
+        {
+            Material material = materials[materialIndex];
+            if (material != null && material.name == OuterTubeMaterialName)
+            {
+                ConfigureTransparentMaterial(material, GetOuterTubeColor(), 0.6f);
+            }
+        }
+
+        RefreshTubeScaleRingsIfNeeded(generatedRoot, tubeBoundary);
+    }
+
+    Color GetOuterTubeColor()
+    {
+        return new Color(0.55f, 0.9f, 1f, outerTubeAlpha);
+    }
+
+    void EnsureTubeVisualMesh(IrairaBouTubeBoundary tubeBoundary)
+    {
+        if (tubeBoundary == null || tubeBoundary.centerline == null || tubeBoundary.centerline.Length < 2)
+        {
+            return;
+        }
+
+        MeshFilter meshFilter = tubeBoundary.GetComponent<MeshFilter>();
+        if (meshFilter == null)
+        {
+            return;
+        }
+
+        int radialSegments = Mathf.Max(8, outerTubeRadialSegments);
+        int expectedVertexCount = tubeBoundary.centerline.Length * (radialSegments + 1);
+        Mesh currentMesh = meshFilter.sharedMesh;
+        bool hasDirectionalUv = currentMesh != null
+            && currentMesh.vertexCount == expectedVertexCount
+            && currentMesh.name == DirectionalTubeMeshName;
+        if (hasDirectionalUv)
+        {
+            return;
+        }
+
+        List<Vector3> path = new List<Vector3>(tubeBoundary.centerline);
+        List<float> radiusProfile = tubeBoundary.radiusProfile != null
+            ? new List<float>(tubeBoundary.radiusProfile)
+            : null;
+        Mesh refreshedMesh = BuildTubeWallMesh(path, radiusProfile, radialSegments);
+        meshFilter.sharedMesh = refreshedMesh;
+
+        MeshCollider meshCollider = tubeBoundary.GetComponent<MeshCollider>();
+        if (meshCollider != null)
+        {
+            meshCollider.sharedMesh = null;
+            meshCollider.sharedMesh = refreshedMesh;
+        }
+    }
+
+    void RefreshTubeScaleRingsIfNeeded(Transform generatedRoot, IrairaBouTubeBoundary tubeBoundary)
+    {
+        if (generatedRoot == null || tubeBoundary == null || tubeBoundary.centerline == null)
+        {
+            return;
+        }
+
+        List<Vector3> path = new List<Vector3>(tubeBoundary.centerline);
+        List<float> radiusProfile = tubeBoundary.radiusProfile != null
+            ? new List<float>(tubeBoundary.radiusProfile)
+            : null;
+        Transform ringRoot = generatedRoot.Find(TubeScaleRingRootName);
+        if (!createTubeScaleRings)
+        {
+            RemoveGeneratedObject(ringRoot != null ? ringRoot.gameObject : null);
+            return;
+        }
+
+        if (IsTubeScaleRingLayoutCurrent(ringRoot, path))
+        {
+            return;
+        }
+
+        RemoveGeneratedObject(ringRoot != null ? ringRoot.gameObject : null);
+        Material ringMaterial = CreateMaterial("Official_Tube_Scale_Ring_Cyan", new Color(0.22f, 0.9f, 1f, 1f), 2.2f);
+        Material majorRingMaterial = CreateMaterial("Official_Tube_Scale_Ring_Major", new Color(1f, 0.86f, 0.38f, 1f), 2.8f);
+        CreateTubeScaleRings(path, radiusProfile, generatedRoot, ringMaterial, majorRingMaterial);
+    }
+
+    bool IsTubeScaleRingLayoutCurrent(Transform ringRoot, List<Vector3> path)
+    {
+        if (ringRoot == null || !ringRoot.gameObject.activeSelf || path == null || path.Count < 2)
+        {
+            return false;
+        }
+
+        float spacing = Mathf.Max(0.5f, tubeScaleRingSpacing);
+        BuildCumulativeDistances(path, out float totalDistance);
+        int expectedRingCount = 0;
+        for (float distance = spacing; distance < totalDistance - spacing * 0.35f; distance += spacing)
+        {
+            expectedRingCount++;
+        }
+
+        if (ringRoot.childCount != expectedRingCount)
+        {
+            return false;
+        }
+        if (expectedRingCount == 0)
+        {
+            return true;
+        }
+
+        Transform firstRing = ringRoot.GetChild(0);
+        string expectedName = $"Scale Ring 01 ({Mathf.RoundToInt(spacing)}m)";
+        LineRenderer firstLine = firstRing.GetComponent<LineRenderer>();
+        if (firstRing.name != expectedName || firstLine == null)
+        {
+            return false;
+        }
+
+        float expectedDiameter = Mathf.Max(0.005f, tubeScaleRingTubeRadius) * 2f;
+        return Mathf.Abs(firstLine.widthMultiplier - expectedDiameter) <= 0.001f;
+    }
+
+    void RemoveGeneratedObject(GameObject target)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        target.SetActive(false);
+        if (Application.isPlaying)
+        {
+            Destroy(target);
+        }
+        else
+        {
+            DestroyImmediate(target);
+        }
+    }
+
     void OnEnable()
     {
+        UpgradeCourseVisibilitySettingsIfNeeded();
         EnsureExperimentComponents();
         if (!buildOnEnable)
         {
@@ -167,6 +340,10 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         }
 
         ConfigureExperimentComponents(generatedRoot);
+        if (Application.isPlaying)
+        {
+            NormalizeCourseVisualMaterials();
+        }
     }
 
     bool ShouldRebuildGeneratedRoot(Transform generatedRoot)
@@ -274,6 +451,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 
     void OnValidate()
     {
+        UpgradeCourseVisibilitySettingsIfNeeded();
         samplesPerCurveSegment = Mathf.Clamp(samplesPerCurveSegment, 3, 24);
         repeatingSectionCycles = Mathf.Clamp(repeatingSectionCycles, 1, 6);
         railOffset = Mathf.Max(0.2f, railOffset);
@@ -289,6 +467,12 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         narrowTubeRadiusMultiplier = Mathf.Clamp(narrowTubeRadiusMultiplier, 0.2f, 1f);
         expandedTubeRadiusMultiplier = Mathf.Clamp(expandedTubeRadiusMultiplier, 1f, 2f);
         outerTubeRadialSegments = Mathf.Max(12, outerTubeRadialSegments);
+        outerTubeFresnelAlpha = Mathf.Clamp(outerTubeFresnelAlpha, 0f, 0.8f);
+        outerTubeFresnelPower = Mathf.Clamp(outerTubeFresnelPower, 0.5f, 8f);
+        tubeGuideAlpha = Mathf.Clamp01(tubeGuideAlpha);
+        tubeGuideAngularHalfWidth = Mathf.Clamp(tubeGuideAngularHalfWidth, 0.001f, 0.02f);
+        tubeSideGuideDashPeriod = Mathf.Max(0.25f, tubeSideGuideDashPeriod);
+        tubeSideGuideDashDuty = Mathf.Clamp(tubeSideGuideDashDuty, 0.1f, 0.9f);
         tubeScaleRingSpacing = Mathf.Max(0.5f, tubeScaleRingSpacing);
         tubeScaleRingTubeRadius = Mathf.Max(0.005f, tubeScaleRingTubeRadius);
         tubeScaleRingInset = Mathf.Max(0f, tubeScaleRingInset);
@@ -313,6 +497,32 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             ConfigureDroneMainShellScale(
                 generatedRoot.GetComponentInChildren<GhostAvatarAnimationDriver>(true));
         }
+    }
+
+    void UpgradeCourseVisibilitySettingsIfNeeded()
+    {
+        if (outerTubeFresnelShader == null)
+        {
+            outerTubeFresnelShader = Shader.Find(TubeFresnelShaderName);
+        }
+        if (courseVisibilityVersion >= CurrentCourseVisibilityVersion)
+        {
+            return;
+        }
+
+        outerTubeAlpha = 0.14f;
+        outerTubeFresnelColor = new Color(0.5f, 0.95f, 1f, 1f);
+        outerTubeFresnelAlpha = 0.28f;
+        outerTubeFresnelPower = 2.2f;
+        tubeTopGuideColor = new Color(0.92f, 0.98f, 1f, 1f);
+        tubeSideGuideColor = new Color(0.16f, 0.82f, 1f, 1f);
+        tubeGuideAlpha = 0.78f;
+        tubeGuideAngularHalfWidth = 0.003f;
+        tubeSideGuideDashPeriod = 4f;
+        tubeSideGuideDashDuty = 0.55f;
+        tubeScaleRingSpacing = 6f;
+        tubeScaleRingTubeRadius = 0.05f;
+        courseVisibilityVersion = CurrentCourseVisibilityVersion;
     }
 
     List<Vector3> BuildPathSamples()
@@ -656,7 +866,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             bool major = ringIndex % 5 == 0;
             float tubeRadius = Mathf.Max(0.005f, tubeScaleRingTubeRadius) * (major ? 1.65f : 1f);
             Material material = major ? majorRingMaterial : ringMaterial;
-            CreateRing($"Scale Ring {ringIndex:00} ({Mathf.RoundToInt(distance)}m)", center, tangent, ringRadius, tubeRadius, ringRoot, material);
+            CreateScaleRingVisual($"Scale Ring {ringIndex:00} ({Mathf.RoundToInt(distance)}m)", center, tangent, ringRadius, tubeRadius, ringRoot, material);
             ringIndex++;
         }
     }
@@ -1118,6 +1328,48 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         return ring;
     }
 
+    GameObject CreateScaleRingVisual(
+        string name,
+        Vector3 center,
+        Vector3 forward,
+        float radius,
+        float tubeRadius,
+        Transform parent,
+        Material material)
+    {
+        GameObject ring = CreateEmpty(name, parent);
+        Vector3 normal = forward.sqrMagnitude > 1e-6f ? forward.normalized : Vector3.forward;
+        Vector3 side = Vector3.Cross(Vector3.up, normal);
+        if (side.sqrMagnitude <= 1e-5f)
+        {
+            side = Vector3.right;
+        }
+        side.Normalize();
+        Vector3 up = Vector3.Cross(normal, side).normalized;
+
+        const int segmentCount = 24;
+        LineRenderer line = ring.AddComponent<LineRenderer>();
+        line.useWorldSpace = true;
+        line.loop = true;
+        line.positionCount = segmentCount;
+        line.widthMultiplier = Mathf.Max(0.005f, tubeRadius) * 2f;
+        line.numCornerVertices = 2;
+        line.numCapVertices = 0;
+        line.textureMode = LineTextureMode.Stretch;
+        line.alignment = LineAlignment.View;
+        line.shadowCastingMode = ShadowCastingMode.Off;
+        line.receiveShadows = false;
+        line.sharedMaterial = material;
+
+        for (int i = 0; i < segmentCount; i++)
+        {
+            float angle = (i / (float)segmentCount) * Mathf.PI * 2f;
+            line.SetPosition(i, center + (Mathf.Cos(angle) * side + Mathf.Sin(angle) * up) * radius);
+        }
+
+        return ring;
+    }
+
     static void GetTubeBasis(Vector3 tangent, out Vector3 side, out Vector3 tubeUp)
     {
         Vector3 normal = tangent.sqrMagnitude > 1e-6f ? tangent.normalized : Vector3.forward;
@@ -1239,8 +1491,10 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     Mesh BuildTubeWallMesh(List<Vector3> path, List<float> radiusProfile, int radialSegments)
     {
         radialSegments = Mathf.Max(8, radialSegments);
+        int ringVertexCount = radialSegments + 1;
         List<Vector3> sides = ComputeSides(path);
-        Vector3[] vertices = new Vector3[path.Count * radialSegments];
+        float[] pathDistances = BuildCumulativeDistances(path, out _);
+        Vector3[] vertices = new Vector3[path.Count * ringVertexCount];
         Vector3[] normals = new Vector3[vertices.Length];
         Vector2[] uvs = new Vector2[vertices.Length];
         int[] triangles = new int[(path.Count - 1) * radialSegments * 12];
@@ -1258,14 +1512,14 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             }
             tubeUp.Normalize();
 
-            for (int j = 0; j < radialSegments; j++)
+            for (int j = 0; j <= radialSegments; j++)
             {
                 float angle = (j / (float)radialSegments) * Mathf.PI * 2f;
                 Vector3 radial = Mathf.Cos(angle) * side + Mathf.Sin(angle) * tubeUp;
-                int vertexIndex = i * radialSegments + j;
+                int vertexIndex = i * ringVertexCount + j;
                 vertices[vertexIndex] = path[i] + radial * radius;
                 normals[vertexIndex] = radial.normalized;
-                uvs[vertexIndex] = new Vector2(j / (float)radialSegments, i / (float)(path.Count - 1));
+                uvs[vertexIndex] = new Vector2(j / (float)radialSegments, pathDistances[i]);
             }
         }
 
@@ -1273,11 +1527,10 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         {
             for (int j = 0; j < radialSegments; j++)
             {
-                int nextJ = (j + 1) % radialSegments;
-                int a = i * radialSegments + j;
-                int b = i * radialSegments + nextJ;
-                int c = (i + 1) * radialSegments + j;
-                int d = (i + 1) * radialSegments + nextJ;
+                int a = i * ringVertexCount + j;
+                int b = a + 1;
+                int c = (i + 1) * ringVertexCount + j;
+                int d = c + 1;
 
                 triangles[triangleIndex++] = a;
                 triangles[triangleIndex++] = c;
@@ -1298,7 +1551,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 
         Mesh mesh = new Mesh
         {
-            name = "Generated_Hollow_IrairaBou_Tube"
+            name = DirectionalTubeMeshName
         };
         mesh.vertices = vertices;
         mesh.normals = normals;
@@ -1482,23 +1735,72 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 
     Material CreateTransparentMaterial(string name, Color color, float emissionMultiplier)
     {
-        Material material = CreateMaterial(name, color, emissionMultiplier);
+        Shader tubeShader = ResolveTubeFresnelShader();
+        Material material = tubeShader != null
+            ? new Material(tubeShader) { name = name }
+            : CreateMaterial(name, color, emissionMultiplier);
+        ConfigureTransparentMaterial(material, color, emissionMultiplier);
+        return material;
+    }
+
+    void ConfigureTransparentMaterial(Material material, Color color, float emissionMultiplier)
+    {
+        if (material == null)
+        {
+            return;
+        }
+
+        Shader tubeShader = ResolveTubeFresnelShader();
+        if (tubeShader != null && material.shader != tubeShader)
+        {
+            material.shader = tubeShader;
+        }
 
         if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
         if (material.HasProperty("_Color")) material.SetColor("_Color", color);
+        if (material.HasProperty("_FresnelColor")) material.SetColor("_FresnelColor", outerTubeFresnelColor);
+        if (material.HasProperty("_FresnelAlpha")) material.SetFloat("_FresnelAlpha", outerTubeFresnelAlpha);
+        if (material.HasProperty("_FresnelPower")) material.SetFloat("_FresnelPower", outerTubeFresnelPower);
+        if (material.HasProperty("_TopGuideColor")) material.SetColor("_TopGuideColor", tubeTopGuideColor);
+        if (material.HasProperty("_SideGuideColor")) material.SetColor("_SideGuideColor", tubeSideGuideColor);
+        if (material.HasProperty("_GuideAlpha")) material.SetFloat("_GuideAlpha", tubeGuideAlpha);
+        if (material.HasProperty("_GuideHalfWidth")) material.SetFloat("_GuideHalfWidth", tubeGuideAngularHalfWidth);
+        if (material.HasProperty("_SideDashPeriod")) material.SetFloat("_SideDashPeriod", tubeSideGuideDashPeriod);
+        if (material.HasProperty("_SideDashDuty")) material.SetFloat("_SideDashDuty", tubeSideGuideDashDuty);
+        if (material.HasProperty("_EmissionColor"))
+        {
+            material.EnableKeyword("_EMISSION");
+            material.SetColor("_EmissionColor", color * emissionMultiplier);
+        }
         if (material.HasProperty("_Surface")) material.SetFloat("_Surface", 1f);
         if (material.HasProperty("_Blend")) material.SetFloat("_Blend", 0f);
+        if (material.HasProperty("_BlendModePreserveSpecular")) material.SetFloat("_BlendModePreserveSpecular", 1f);
         if (material.HasProperty("_AlphaClip")) material.SetFloat("_AlphaClip", 0f);
-        if (material.HasProperty("_SrcBlend")) material.SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);
+        if (material.HasProperty("_SrcBlend")) material.SetFloat("_SrcBlend", (float)BlendMode.One);
         if (material.HasProperty("_DstBlend")) material.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
+        if (material.HasProperty("_SrcBlendAlpha")) material.SetFloat("_SrcBlendAlpha", (float)BlendMode.One);
+        if (material.HasProperty("_DstBlendAlpha")) material.SetFloat("_DstBlendAlpha", (float)BlendMode.OneMinusSrcAlpha);
         if (material.HasProperty("_ZWrite")) material.SetFloat("_ZWrite", 0f);
         if (material.HasProperty("_Cull")) material.SetFloat("_Cull", (float)CullMode.Off);
         if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", 0.86f);
         if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", 0f);
 
+        material.DisableKeyword("_ALPHATEST_ON");
         material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        material.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+        material.SetOverrideTag("RenderType", "Transparent");
+        material.SetShaderPassEnabled("ShadowCaster", false);
+        material.SetShaderPassEnabled("DepthOnly", false);
+        material.SetShaderPassEnabled("MotionVectors", false);
+        material.doubleSidedGI = true;
         material.renderQueue = (int)RenderQueue.Transparent;
-        return material;
+    }
+
+    Shader ResolveTubeFresnelShader()
+    {
+        return outerTubeFresnelShader != null
+            ? outerTubeFresnelShader
+            : Shader.Find(TubeFresnelShaderName);
     }
 
     void AssignMaterial(GameObject go, Material material)

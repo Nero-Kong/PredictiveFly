@@ -112,9 +112,13 @@ public class PredictiveFlyExperimentController : MonoBehaviour
 
         if (logger != null && !logger.IsLogging)
         {
-            if (logger.FinishReached)
+            if (logger.FinishReached && logger.CompletedDataSaved)
             {
                 CompleteTrial();
+            }
+            else if (logger.FinishReached)
+            {
+                FailCompletedTrialSave();
             }
             else
             {
@@ -211,6 +215,8 @@ public class PredictiveFlyExperimentController : MonoBehaviour
                 yield break;
             }
         }
+
+        sceneBuilder.NormalizeCourseVisualMaterials();
 
         activeRouteId = sceneBuilder.RouteId;
         status = "Preparing condition, calibration, and delay buffer.";
@@ -320,6 +326,22 @@ public class PredictiveFlyExperimentController : MonoBehaviour
         completedTrialKeys.Add(GetTrialKey(activeParticipantId, activeTrialIndex));
         state = TrialState.Completed;
         status = $"Trial {activeTrialIndex} completed. Set Trial Index to the next value when ready.";
+    }
+
+    void FailCompletedTrialSave()
+    {
+        locomotion.SetLocomotionInputEnabled(false);
+        if (recenterAfterTrial)
+        {
+            locomotion.RecenterNow();
+        }
+
+        state = TrialState.Error;
+        string detail = string.IsNullOrWhiteSpace(logger.LastSaveError)
+            ? "Unknown file output error."
+            : logger.LastSaveError;
+        status = $"Course completed, but objective data was not saved: {detail}";
+        Debug.LogError($"[PredictiveFlyExperimentController] {status}", this);
     }
 
     void MonitorTracking()

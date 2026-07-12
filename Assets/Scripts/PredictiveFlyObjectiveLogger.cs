@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using UnityEngine;
 
 [DefaultExecutionOrder(500)]
@@ -41,7 +42,6 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
     public string outputDirectory = "Data/PredictiveFlyObjective";
     public bool startOnEnable;
     public bool stopOnDisable = true;
-    [Min(0.1f)] public float flushIntervalSeconds = 2f;
 
     [Header("Controls")]
     public bool useKeyboardControls = true;
@@ -102,6 +102,8 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
     [SerializeField] int checkpointCount;
     [SerializeField] int trackingLossCount;
     [SerializeField] bool finishReached;
+    [SerializeField] bool completedDataSaved;
+    [SerializeField] string lastSaveError;
     [SerializeField] float pathLength;
     [SerializeField] float minObstacleDistance = float.PositiveInfinity;
     [SerializeField] float maxRouteProgressNormalized;
@@ -117,15 +119,14 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
     readonly HashSet<int> reachedFinishes = new HashSet<int>();
     readonly List<string> row = new List<string>(128);
 
-    StreamWriter timeseriesWriter;
-    StreamWriter eventsWriter;
-    StreamWriter summaryWriter;
-    StreamWriter encountersWriter;
+    StringWriter timeseriesWriter;
+    StringWriter eventsWriter;
+    StringWriter summaryWriter;
+    StringWriter encountersWriter;
 
     DateTime sessionStartDateTime;
     float trialStartTime;
     float nextSampleTime;
-    float nextFlushTime;
     Vector3 trialStartPosition;
     Vector3 lastRemotePosition;
     float lastRemoteYawDeg;
@@ -159,6 +160,8 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
 
     public bool IsLogging => isLogging;
     public bool FinishReached => finishReached;
+    public bool CompletedDataSaved => completedDataSaved;
+    public string LastSaveError => lastSaveError;
     public int TrackingLossCount => trackingLossCount;
     public float MaxRouteProgressNormalized => maxRouteProgressNormalized;
 
@@ -275,11 +278,6 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
             nextSampleTime = Mathf.Max(nextSampleTime + interval, Time.time + interval);
         }
 
-        if (Time.unscaledTime >= nextFlushTime)
-        {
-            FlushAll();
-            nextFlushTime = Time.unscaledTime + Mathf.Max(0.1f, flushIntervalSeconds);
-        }
     }
 
     void OnDisable()
@@ -325,12 +323,11 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         activeConfigId = ResolveExperimentConfigId();
         sessionId = $"{Sanitize(activeParticipantId)}_{Sanitize(activeMode)}_{timestamp}_T{trialNumber:00}";
         activeOutputDirectory = ResolveOutputDirectory();
-        Directory.CreateDirectory(activeOutputDirectory);
 
-        timeseriesWriter = CreateWriter("objective_timeseries");
-        eventsWriter = CreateWriter("objective_events");
-        summaryWriter = CreateWriter("objective_trial_summary");
-        encountersWriter = CreateWriter("objective_obstacle_encounters");
+        timeseriesWriter = CreateBufferWriter(256 * 1024);
+        eventsWriter = CreateBufferWriter(16 * 1024);
+        summaryWriter = CreateBufferWriter(4 * 1024);
+        encountersWriter = CreateBufferWriter(32 * 1024);
 
         WriteTimeseriesHeader();
         WriteEventsHeader();
@@ -339,7 +336,6 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
 
         trialStartTime = Time.time;
         nextSampleTime = Time.time;
-        nextFlushTime = Time.unscaledTime + Mathf.Max(0.1f, flushIntervalSeconds);
         trialStartPosition = GetRemoteProbePosition();
         lastRemotePosition = trialStartPosition;
         lastRemoteYawDeg = GetRemoteYawDeg();
@@ -363,10 +359,18 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
             return;
         }
 
-        WriteEvent(completed ? "trial_complete" : "trial_stop", string.Empty, string.Empty, GetRemoteProbePosition(), float.NaN, float.NaN, "Objective logging stopped.");
+        bool courseCompleted = completed && finishReached;
+        WriteEvent(courseCompleted ? "trial_complete" : "trial_stop", string.Empty, string.Empty, GetRemoteProbePosition(), float.NaN, float.NaN, "Objective logging stopped.");
         EndAllActiveEncounters(false);
-        WriteTrialSummary(completed || finishReached);
-        FlushAll();
+        if (courseCompleted)
+        {
+            WriteTrialSummary(true);
+            completedDataSaved = SaveCompletedTrialData();
+        }
+        else
+        {
+            Debug.LogWarning("[PredictiveFlyObjectiveLogger] Trial did not reach the course finish. Buffered objective data was discarded.", this);
+        }
         DisposeWriters();
         isLogging = false;
     }
@@ -617,6 +621,8 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         checkpointCount = 0;
         trackingLossCount = 0;
         finishReached = false;
+        completedDataSaved = false;
+        lastSaveError = string.Empty;
         pathLength = 0f;
         minObstacleDistance = float.PositiveInfinity;
         maxRouteProgressNormalized = 0f;
@@ -649,10 +655,9 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         }
     }
 
-    StreamWriter CreateWriter(string suffix)
+    static StringWriter CreateBufferWriter(int initialCapacity)
     {
-        string path = Path.Combine(activeOutputDirectory, $"{sessionId}_{suffix}.csv");
-        return new StreamWriter(path, false);
+        return new StringWriter(new StringBuilder(initialCapacity), CultureInfo.InvariantCulture);
     }
 
     void WriteTimeseriesHeader()
@@ -1616,12 +1621,80 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
 #endif
     }
 
-    void FlushAll()
+    bool SaveCompletedTrialData()
     {
-        timeseriesWriter?.Flush();
-        eventsWriter?.Flush();
-        summaryWriter?.Flush();
-        encountersWriter?.Flush();
+        string[] suffixes =
+        {
+            "objective_timeseries",
+            "objective_events",
+            "objective_trial_summary",
+            "objective_obstacle_encounters"
+        };
+        string[] contents =
+        {
+            timeseriesWriter?.ToString() ?? string.Empty,
+            eventsWriter?.ToString() ?? string.Empty,
+            summaryWriter?.ToString() ?? string.Empty,
+            encountersWriter?.ToString() ?? string.Empty
+        };
+        string[] finalPaths = new string[suffixes.Length];
+        string[] stagingPaths = new string[suffixes.Length];
+        int promotedFileCount = 0;
+
+        try
+        {
+            Directory.CreateDirectory(activeOutputDirectory);
+            for (int i = 0; i < suffixes.Length; i++)
+            {
+                finalPaths[i] = Path.Combine(activeOutputDirectory, $"{sessionId}_{suffixes[i]}.csv");
+                stagingPaths[i] = finalPaths[i] + ".writing";
+                if (File.Exists(finalPaths[i]))
+                {
+                    throw new IOException($"Output file already exists: {finalPaths[i]}");
+                }
+                File.WriteAllText(stagingPaths[i], contents[i], new UTF8Encoding(false));
+            }
+
+            for (int i = 0; i < suffixes.Length; i++)
+            {
+                File.Move(stagingPaths[i], finalPaths[i]);
+                promotedFileCount++;
+            }
+
+            lastSaveError = string.Empty;
+            Debug.Log($"[PredictiveFlyObjectiveLogger] Completed trial saved to {activeOutputDirectory}", this);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            lastSaveError = exception.Message;
+            for (int i = 0; i < stagingPaths.Length; i++)
+            {
+                TryDeleteFile(stagingPaths[i]);
+            }
+            for (int i = 0; i < promotedFileCount; i++)
+            {
+                TryDeleteFile(finalPaths[i]);
+            }
+            Debug.LogError($"[PredictiveFlyObjectiveLogger] Course completed, but objective data could not be saved: {exception}", this);
+            return false;
+        }
+    }
+
+    static void TryDeleteFile(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception)
+        {
+        }
     }
 
     void DisposeWriters()
@@ -1678,7 +1751,7 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         yawDeg = Mathf.Atan2(forwardLocal.x, forwardLocal.z) * Mathf.Rad2Deg;
     }
 
-    static void WriteRow(StreamWriter writer, params string[] values)
+    static void WriteRow(StringWriter writer, params string[] values)
     {
         if (writer == null)
         {
@@ -1696,7 +1769,7 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         writer.WriteLine();
     }
 
-    static void WriteRow(StreamWriter writer, List<string> values)
+    static void WriteRow(StringWriter writer, List<string> values)
     {
         if (writer == null)
         {

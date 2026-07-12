@@ -29,11 +29,11 @@ On `IrairaBou3D Official Scene Builder > PredictiveFlyExperimentController`:
 1. Set `participantId`.
 2. Set `trialIndex` to 1, 2, 3, or 4.
 3. Ask the participant to stand in a neutral posture with the left body-anchor controller tracked.
-4. Press Enter once. The controller assigns the condition and route, rebuilds the route when needed, freezes input, recenters, fills the delay buffer, validates body tracking, starts all CSV files, and enables input.
+4. Press Enter once. The controller assigns the condition and route, rebuilds the route when needed, normalizes the course material state, freezes input, recenters, fills the delay buffer, validates body tracking, starts in-memory objective-data buffering, and enables input.
 
-Press Escape to abort. Finish detection stops and closes the files automatically. After a successful trial, locomotion remains locked so the participant can rest. Change only `trialIndex`, then press Enter when ready for the next trial. A completed participant/trial pair cannot be repeated accidentally during the same Play Mode session.
+Press Escape to abort. Reaching the course finish writes all four CSV files and then locks locomotion so the participant can rest. Change only `trialIndex`, then press Enter when ready for the next trial. A completed participant/trial pair cannot be repeated accidentally during the same Play Mode session.
 
-If a trial is aborted, keep the same `trialIndex` and press Enter to repeat it. The invalid CSV files are retained with their original timestamp.
+If a trial is aborted, its buffered data is discarded and no CSV files are created. Keep the same `trialIndex` and press Enter to repeat it.
 
 ## Valid Trial Rules
 
@@ -45,7 +45,7 @@ A trial is invalid when any of the following occurs:
 - The participant or experimenter aborts.
 - A Unity or XR error prevents completion.
 
-Do not delete invalid files. Keep them with `completed=0` and document the exclusion reason.
+No objective CSV files are produced for an invalid trial. Document the exclusion reason in the experimenter's separate session log before repeating the same `trialIndex`.
 
 ## Objective Reference State
 
@@ -57,12 +57,18 @@ Route progress and reference distance use the `IrairaBouTubeBoundary` centerline
 reference route distance / measured remote-probe path length
 ```
 
+## Course Visibility
+
+Every condition and route uses the same Fresnel-enhanced transparent wall, one continuous white top guide, two cyan dashed side guides, and 6 m distance rings. The guides are rendered directly by the wall shader and have no colliders or triggers. Distance rings are visual-only objects without colliders. None of these cues changes the route centerline, tube boundary, obstacles, checkpoints, finish detection, or objective probe.
+
 ## CSV Files
 
 - `objective_timeseries.csv`: 30 Hz state, input, delay, prediction, tracking, route progress, obstacle, and blocking data.
 - `objective_events.csv`: trial, tracking, checkpoint, finish, collision, near-miss, blocking, and avoidance events.
 - `objective_trial_summary.csv`: one trial-level outcome row.
 - `objective_obstacle_encounters.csv`: one row per obstacle encounter.
+
+Data for all four files is buffered in memory during flight. The files are written as one completed set only after the real-time remote probe reaches the course finish. Stopping Play Mode, pressing Escape, tracking failure, a mode change, or any other pre-finish stop discards the entire buffered set.
 
 Every file freezes participant, trial, route, route order, condition order, condition label, mode, and configuration ID at trial start.
 
@@ -76,10 +82,10 @@ Treat collisions and near misses as secondary safety outcomes. Correct secondary
 
 ## Pilot Checklist
 
-- Verify all four files have matching metadata and close at finish.
+- Verify no files appear during flight and all four matching files appear after finish.
 - Verify checkpoint count and route progress increase monotonically.
 - Deliberately touch a wall and an avoidance obstacle; confirm collision events.
 - Deliberately approach and turn away; confirm exactly one first avoidance-onset event.
-- Disconnect/reconnect the body anchor; confirm tracking events and automatic abort after the grace period.
+- Disconnect the body anchor; confirm automatic abort after the grace period and confirm that no files are created.
 - Check frame time, task duration, sickness, ghost visibility, and prediction-horizon range.
 - Freeze delay, prediction, locomotion, obstacle, and logging parameters after the pilot.

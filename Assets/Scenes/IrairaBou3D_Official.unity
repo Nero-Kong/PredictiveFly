@@ -187,11 +187,22 @@ MonoBehaviour:
   outerTubeRadius: 3.92
   narrowTubeRadiusMultiplier: 0.55
   expandedTubeRadiusMultiplier: 1.25
-  outerTubeAlpha: 0.18
+  outerTubeAlpha: 0.14
   outerTubeRadialSegments: 48
+  outerTubeFresnelShader: {fileID: 4800000, guid: 8f3c1f7ea3254e01b3bf3adf94f1cb75, type: 3}
+  outerTubeFresnelColor: {r: 0.5, g: 0.95, b: 1, a: 1}
+  outerTubeFresnelAlpha: 0.28
+  outerTubeFresnelPower: 2.2
+  tubeTopGuideColor: {r: 0.92, g: 0.98, b: 1, a: 1}
+  tubeSideGuideColor: {r: 0.16, g: 0.82, b: 1, a: 1}
+  tubeGuideAlpha: 0.78
+  tubeGuideAngularHalfWidth: 0.003
+  tubeSideGuideDashPeriod: 4
+  tubeSideGuideDashDuty: 0.55
+  courseVisibilityVersion: 1
   createTubeScaleRings: 1
-  tubeScaleRingSpacing: 8
-  tubeScaleRingTubeRadius: 0.035
+  tubeScaleRingSpacing: 6
+  tubeScaleRingTubeRadius: 0.05
   tubeScaleRingInset: 0.08
   createTubeAvoidanceObstacles: 1
   tubeAvoidanceObstacleRadius: 0.65
