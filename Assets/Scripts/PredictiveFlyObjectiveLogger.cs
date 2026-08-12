@@ -40,6 +40,10 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
     [Header("Output")]
     [Tooltip("Relative paths are resolved from the Unity project root in the editor.")]
     public string outputDirectory = "Data/PredictiveFlyObjective";
+    [Tooltip("Save a completed=0 summary and all buffered CSV data when a trial stops before the finish. Disabled for Experiment 1; Experiment 2 enables it because non-completion is an outcome.")]
+    public bool saveIncompleteTrials;
+    [Tooltip("Optional subdirectory below Output Directory for incomplete trials. Leave empty to mix them with completed trials.")]
+    public string incompleteTrialSubdirectory = "Incomplete";
     public bool startOnEnable;
     public bool stopOnDisable = true;
 
@@ -103,6 +107,7 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
     [SerializeField] int trackingLossCount;
     [SerializeField] bool finishReached;
     [SerializeField] bool completedDataSaved;
+    [SerializeField] bool lastTrialDataSaved;
     [SerializeField] string lastSaveError;
     [SerializeField] float pathLength;
     [SerializeField] float minObstacleDistance = float.PositiveInfinity;
@@ -161,6 +166,7 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
     public bool IsLogging => isLogging;
     public bool FinishReached => finishReached;
     public bool CompletedDataSaved => completedDataSaved;
+    public bool LastTrialDataSaved => lastTrialDataSaved;
     public string LastSaveError => lastSaveError;
     public int TrackingLossCount => trackingLossCount;
     public float MaxRouteProgressNormalized => maxRouteProgressNormalized;
@@ -321,7 +327,10 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         activeConditionOrder = string.IsNullOrWhiteSpace(conditionOrder) ? "NA" : conditionOrder.Trim();
         activeTrialWithinCondition = Mathf.Max(1, trialWithinCondition);
         activeConfigId = ResolveExperimentConfigId();
-        sessionId = $"{Sanitize(activeParticipantId)}_{Sanitize(activeMode)}_{timestamp}_T{trialNumber:00}";
+        string sessionConditionToken = string.IsNullOrWhiteSpace(conditionLabelOverride)
+            ? activeMode
+            : activeConditionLabel;
+        sessionId = $"{Sanitize(activeParticipantId)}_{Sanitize(sessionConditionToken)}_{timestamp}_T{trialNumber:00}";
         activeOutputDirectory = ResolveOutputDirectory();
 
         timeseriesWriter = CreateBufferWriter(256 * 1024);
@@ -362,10 +371,15 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         bool courseCompleted = completed && finishReached;
         WriteEvent(courseCompleted ? "trial_complete" : "trial_stop", string.Empty, string.Empty, GetRemoteProbePosition(), float.NaN, float.NaN, "Objective logging stopped.");
         EndAllActiveEncounters(false);
+        WriteTrialSummary(courseCompleted);
         if (courseCompleted)
         {
-            WriteTrialSummary(true);
-            completedDataSaved = SaveCompletedTrialData();
+            completedDataSaved = SaveTrialData(true);
+            lastTrialDataSaved = completedDataSaved;
+        }
+        else if (saveIncompleteTrials)
+        {
+            lastTrialDataSaved = SaveTrialData(false);
         }
         else
         {
@@ -622,6 +636,7 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
         trackingLossCount = 0;
         finishReached = false;
         completedDataSaved = false;
+        lastTrialDataSaved = false;
         lastSaveError = string.Empty;
         pathLength = 0f;
         minObstacleDistance = float.PositiveInfinity;
@@ -1621,7 +1636,7 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
 #endif
     }
 
-    bool SaveCompletedTrialData()
+    bool SaveTrialData(bool completed)
     {
         string[] suffixes =
         {
@@ -1643,10 +1658,16 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
 
         try
         {
-            Directory.CreateDirectory(activeOutputDirectory);
+            string outputPath = activeOutputDirectory;
+            if (!completed && !string.IsNullOrWhiteSpace(incompleteTrialSubdirectory))
+            {
+                outputPath = Path.Combine(outputPath, Sanitize(incompleteTrialSubdirectory.Trim()));
+            }
+
+            Directory.CreateDirectory(outputPath);
             for (int i = 0; i < suffixes.Length; i++)
             {
-                finalPaths[i] = Path.Combine(activeOutputDirectory, $"{sessionId}_{suffixes[i]}.csv");
+                finalPaths[i] = Path.Combine(outputPath, $"{sessionId}_{suffixes[i]}.csv");
                 stagingPaths[i] = finalPaths[i] + ".writing";
                 if (File.Exists(finalPaths[i]))
                 {
@@ -1662,7 +1683,8 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
             }
 
             lastSaveError = string.Empty;
-            Debug.Log($"[PredictiveFlyObjectiveLogger] Completed trial saved to {activeOutputDirectory}", this);
+            string completionLabel = completed ? "Completed" : "Incomplete";
+            Debug.Log($"[PredictiveFlyObjectiveLogger] {completionLabel} trial saved to {outputPath}", this);
             return true;
         }
         catch (Exception exception)
@@ -1676,7 +1698,7 @@ public class PredictiveFlyObjectiveLogger : MonoBehaviour
             {
                 TryDeleteFile(finalPaths[i]);
             }
-            Debug.LogError($"[PredictiveFlyObjectiveLogger] Course completed, but objective data could not be saved: {exception}", this);
+            Debug.LogError($"[PredictiveFlyObjectiveLogger] Objective data could not be saved: {exception}", this);
             return false;
         }
     }

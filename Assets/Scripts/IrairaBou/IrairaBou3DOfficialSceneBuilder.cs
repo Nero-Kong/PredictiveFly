@@ -11,6 +11,12 @@ using UnityEngine.SpatialTracking;
 [DisallowMultipleComponent]
 public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 {
+    public enum ExperimentProtocol
+    {
+        Experiment1,
+        Experiment2
+    }
+
     public enum CourseRouteVariant
     {
         Base,
@@ -43,6 +49,10 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     [Range(0.02f, 0.25f)] public float helixTransitionFraction = 0.12f;
     [Tooltip("Preview/default route. The experiment controller overrides this from Participant ID and Trial Index when Enter is pressed.")]
     public CourseRouteVariant routeVariant;
+
+    [Header("Experiment Protocol")]
+    [Tooltip("Select which persistent experiment controller owns calibration, condition scheduling, and trial lifecycle.")]
+    public ExperimentProtocol experimentProtocol = ExperimentProtocol.Experiment1;
 
     public string RouteId => $"Route_{(char)('A' + (int)routeVariant)}";
 
@@ -1216,7 +1226,21 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         {
             controller = gameObject.AddComponent<PredictiveFlyExperimentController>();
         }
-        controller.enabled = true;
+
+        PredictiveFlyExperiment2Controller experiment2Controller =
+            GetComponent<PredictiveFlyExperiment2Controller>();
+        if (experimentProtocol == ExperimentProtocol.Experiment2 && experiment2Controller == null)
+        {
+            experiment2Controller = gameObject.AddComponent<PredictiveFlyExperiment2Controller>();
+        }
+
+        bool useExperiment2 = experimentProtocol == ExperimentProtocol.Experiment2;
+        logger.enabled = true;
+        controller.enabled = !useExperiment2;
+        if (experiment2Controller != null)
+        {
+            experiment2Controller.enabled = useExperiment2;
+        }
 
         PredictiveFlyRouteMarkerVisualizer legacyMarkerVisualizer = GetComponent<PredictiveFlyRouteMarkerVisualizer>();
         if (legacyMarkerVisualizer != null)
@@ -1226,9 +1250,15 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 
         controller.sceneBuilder = this;
         controller.logger = logger;
+        if (experiment2Controller != null)
+        {
+            experiment2Controller.sceneBuilder = this;
+            experiment2Controller.logger = logger;
+        }
         logger.useKeyboardControls = false;
         logger.stopOnFinish = true;
         logger.stopOnModeChange = true;
+        logger.saveIncompleteTrials = useExperiment2;
         logger.routeId = RouteId;
     }
 
@@ -1238,6 +1268,8 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 
         PredictiveFlyObjectiveLogger logger = GetComponent<PredictiveFlyObjectiveLogger>();
         PredictiveFlyExperimentController controller = GetComponent<PredictiveFlyExperimentController>();
+        PredictiveFlyExperiment2Controller experiment2Controller =
+            GetComponent<PredictiveFlyExperiment2Controller>();
         PredictiveGhostAvatarLocomotion locomotion = generatedRoot != null
             ? generatedRoot.GetComponentInChildren<PredictiveGhostAvatarLocomotion>(true)
             : null;
@@ -1274,6 +1306,13 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             controller.sceneBuilder = this;
             controller.logger = logger;
             controller.locomotion = locomotion;
+        }
+
+        if (experiment2Controller != null)
+        {
+            experiment2Controller.sceneBuilder = this;
+            experiment2Controller.logger = logger;
+            experiment2Controller.locomotion = locomotion;
         }
 
         ConfigurePlanarTranslation(locomotion);
