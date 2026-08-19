@@ -14,7 +14,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     public enum ExperimentProtocol
     {
         Experiment1,
-        Experiment2
+        Experiments2And3
     }
 
     public enum CourseRouteVariant
@@ -51,7 +51,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     public CourseRouteVariant routeVariant;
 
     [Header("Experiment Protocol")]
-    [Tooltip("Select which persistent experiment controller owns calibration, condition scheduling, and trial lifecycle.")]
+    [Tooltip("Select the experiment protocol. Experiments 2 and 3 use separate preference and formal-trial controllers.")]
     public ExperimentProtocol experimentProtocol = ExperimentProtocol.Experiment1;
 
     public string RouteId => $"Route_{(char)('A' + (int)routeVariant)}";
@@ -1229,17 +1229,29 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 
         PredictiveFlyExperiment2Controller experiment2Controller =
             GetComponent<PredictiveFlyExperiment2Controller>();
-        if (experimentProtocol == ExperimentProtocol.Experiment2 && experiment2Controller == null)
+        if (experimentProtocol == ExperimentProtocol.Experiments2And3 && experiment2Controller == null)
         {
             experiment2Controller = gameObject.AddComponent<PredictiveFlyExperiment2Controller>();
         }
 
-        bool useExperiment2 = experimentProtocol == ExperimentProtocol.Experiment2;
+        PredictiveFlyExperiment3Controller experiment3Controller =
+            GetComponent<PredictiveFlyExperiment3Controller>();
+        if (experimentProtocol == ExperimentProtocol.Experiments2And3
+            && experiment3Controller == null)
+        {
+            experiment3Controller = gameObject.AddComponent<PredictiveFlyExperiment3Controller>();
+        }
+
+        bool useExperiments2And3 = experimentProtocol == ExperimentProtocol.Experiments2And3;
         logger.enabled = true;
-        controller.enabled = !useExperiment2;
+        controller.enabled = !useExperiments2And3;
         if (experiment2Controller != null)
         {
-            experiment2Controller.enabled = useExperiment2;
+            experiment2Controller.enabled = useExperiments2And3;
+        }
+        if (experiment3Controller != null)
+        {
+            experiment3Controller.enabled = useExperiments2And3;
         }
 
         PredictiveFlyRouteMarkerVisualizer legacyMarkerVisualizer = GetComponent<PredictiveFlyRouteMarkerVisualizer>();
@@ -1253,12 +1265,18 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         if (experiment2Controller != null)
         {
             experiment2Controller.sceneBuilder = this;
-            experiment2Controller.logger = logger;
+            experiment2Controller.experiment3Controller = experiment3Controller;
+        }
+        if (experiment3Controller != null)
+        {
+            experiment3Controller.sceneBuilder = this;
+            experiment3Controller.logger = logger;
+            experiment3Controller.experiment2Controller = experiment2Controller;
         }
         logger.useKeyboardControls = false;
         logger.stopOnFinish = true;
         logger.stopOnModeChange = true;
-        logger.saveIncompleteTrials = useExperiment2;
+        logger.saveIncompleteTrials = false;
         logger.routeId = RouteId;
     }
 
@@ -1270,6 +1288,8 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         PredictiveFlyExperimentController controller = GetComponent<PredictiveFlyExperimentController>();
         PredictiveFlyExperiment2Controller experiment2Controller =
             GetComponent<PredictiveFlyExperiment2Controller>();
+        PredictiveFlyExperiment3Controller experiment3Controller =
+            GetComponent<PredictiveFlyExperiment3Controller>();
         PredictiveGhostAvatarLocomotion locomotion = generatedRoot != null
             ? generatedRoot.GetComponentInChildren<PredictiveGhostAvatarLocomotion>(true)
             : null;
@@ -1311,8 +1331,16 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         if (experiment2Controller != null)
         {
             experiment2Controller.sceneBuilder = this;
-            experiment2Controller.logger = logger;
             experiment2Controller.locomotion = locomotion;
+            experiment2Controller.experiment3Controller = experiment3Controller;
+        }
+
+        if (experiment3Controller != null)
+        {
+            experiment3Controller.sceneBuilder = this;
+            experiment3Controller.logger = logger;
+            experiment3Controller.locomotion = locomotion;
+            experiment3Controller.experiment2Controller = experiment2Controller;
         }
 
         ConfigurePlanarTranslation(locomotion);

@@ -133,6 +133,7 @@ GameObject:
   - component: {fileID: 100004}
   - component: {fileID: 100005}
   - component: {fileID: 100006}
+  - component: {fileID: 100007}
   m_Layer: 0
   m_Name: IrairaBou3D Official Scene Builder
   m_TagString: Untagged
@@ -245,12 +246,11 @@ MonoBehaviour:
   routeOrder: 
   conditionOrder: 
   experimentConfigId: 
-  outputDirectory: Data/PredictiveFlyExperiment2/Objective
-  saveIncompleteTrials: 1
+  outputDirectory: Data/PredictiveFlyExperiment3/Objective
+  saveIncompleteTrials: 0
   incompleteTrialSubdirectory: Incomplete
   startOnEnable: 0
   stopOnDisable: 1
-  flushIntervalSeconds: 2
   useKeyboardControls: 0
   startLoggingKey: 115
   stopLoggingKey: 113
@@ -297,6 +297,9 @@ MonoBehaviour:
   checkpointCount: 0
   trackingLossCount: 0
   finishReached: 0
+  completedDataSaved: 0
+  lastTrialDataSaved: 0
+  lastSaveError: 
   pathLength: 0
   minObstacleDistance: Infinity
   maxRouteProgressNormalized: 0
@@ -340,27 +343,6 @@ MonoBehaviour:
   activeRouteId: 
   status: Idle
   trackingLostSince: -1
---- !u!114 &100006
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 100000}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 16054b7311667d5468bc17843aa97461, type: 3}
-  m_Name:
-  m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyExperiment2Controller
-  participantId: E2P001
-  trialIndex: 1
-  calibratedParticipantId:
-  selectedHorizon500Seconds: -1
-  selectedHorizon1000Seconds: -1
-  locomotion: {fileID: 2052845048}
-  logger: {fileID: 100003}
-  sceneBuilder: {fileID: 100002}
-  autoFindReferences: 1
 --- !u!114 &100005
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -373,7 +355,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3fc90bca4a1b4e28be1661a1a7ac2243, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyRouteMarkerVisualizer
-  tubeBoundary: {fileID: 0}
+  tubeBoundary: {fileID: 610189381}
   checkpointProgress:
   - 0.18
   - 0.36
@@ -385,6 +367,123 @@ MonoBehaviour:
   ringSegments: 48
   checkpointColor: {r: 1, g: 0.82, b: 0.18, a: 1}
   finishColor: {r: 0.18, g: 1, b: 0.48, a: 1}
+--- !u!114 &100006
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 100000}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 16054b7311667d5468bc17843aa97461, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyExperiment3Controller
+  participantId: P001
+  trialIndex: 1
+  useKeyboardControls: 1
+  prepareAndStartTrialKey: 13
+  abortKey: 27
+  minimumPreparationSeconds: 0.75
+  preparationTimeoutSeconds: 8
+  abortOnBodyAnchorLoss: 1
+  trackingLossGraceSeconds: 0.75
+  recenterAfterRun: 1
+  preventAccidentalCompletedTrialRepeat: 1
+  objectiveOutputDirectory: Data/PredictiveFlyExperiment3/Objective
+  calibrationOutputDirectory: Data/PredictiveFlyExperiment2/Calibration
+  locomotion: {fileID: 2052845048}
+  logger: {fileID: 100003}
+  sceneBuilder: {fileID: 100002}
+  experiment2Controller: {fileID: 100007}
+  autoFindReferences: 1
+  calibrationReady: 0
+  calibratedParticipantId: 
+  selectedHorizon0Seconds: -1
+  selectedHorizon250Seconds: -1
+  selectedHorizon500Seconds: -1
+  selectedHorizon750Seconds: -1
+  selectedHorizon1000Seconds: -1
+  calibrationProfilePath: 
+  calibrationCsvPath: 
+  calibrationCompletedAt: 
+  loadedMinimumSelectableHorizonSeconds: 0
+  loadedMaximumSelectableHorizonSeconds: 1
+  loadedHorizonStepSeconds: 0.1
+  loadedReferenceMinTranslationHorizonSeconds: 0.08
+  loadedReferenceMaxTranslationHorizonSeconds: 0.45
+  loadedReferenceMinYawHorizonSeconds: 0.05
+  loadedReferenceMaxYawHorizonSeconds: 0.2
+  loadedPredictionMethod: 0
+  state: 0
+  scheduledAssignmentPreview: 'Trial 1: D0_Current, Route_A, completed local calibration
+    required'
+  delayOrderPreview: 0>500>1000
+  status: Idle
+  activeParticipantId: 
+  activeTrialIndex: 0
+  activeDelayMilliseconds: 0
+  activeStrategy: 0
+  activeConditionOrder: 
+  activeRouteOrder: 
+  activeRouteId: 
+  activeMaximumTranslationHorizonSeconds: 0
+  trackingLostSince: -1
+--- !u!114 &100007
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 100000}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e6c1a936e0524d5da2f7c4debb8d6c7a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyExperiment2Controller
+  participantId: P001
+  useKeyboardControls: 1
+  beginCalibrationKey: 288
+  alternateBeginCalibrationKey: 107
+  decreaseHorizonKey: 276
+  increaseHorizonKey: 275
+  acceptCalibrationKey: 32
+  abortKey: 27
+  minimumSelectableHorizonSeconds: 0
+  maximumSelectableHorizonSeconds: 1
+  horizonStepSeconds: 0.1
+  minimumCalibrationRunSeconds: 20
+  thirdRunDifferenceThresholdSeconds: 0.2
+  calibrationRoute: 0
+  referenceMinTranslationHorizonSeconds: 0.08
+  referenceMaxTranslationHorizonSeconds: 0.45
+  referenceMinYawHorizonSeconds: 0.05
+  referenceMaxYawHorizonSeconds: 0.2
+  predictionMethod: 0
+  minimumPreparationSeconds: 0.75
+  preparationTimeoutSeconds: 8
+  recenterAfterRun: 1
+  calibrationOutputDirectory: Data/PredictiveFlyExperiment2/Calibration
+  locomotion: {fileID: 2052845048}
+  sceneBuilder: {fileID: 100002}
+  experiment3Controller: {fileID: 100006}
+  autoFindReferences: 1
+  state: 0
+  status: Idle
+  delayOrderPreview: 0>250>1000>500>750
+  calibratedParticipantId: 
+  selectedHorizon0Seconds: -1
+  selectedHorizon250Seconds: -1
+  selectedHorizon500Seconds: -1
+  selectedHorizon750Seconds: -1
+  selectedHorizon1000Seconds: -1
+  activeDelayMilliseconds: 0
+  activeRunNumber: 0
+  activeAnchor: 
+  currentHorizonSeconds: 0
+  calibrationCsvPath: 
+  completedProfilePath: 
+  lastSaveError: 
 --- !u!1 &681855
 GameObject:
   m_ObjectHideFlags: 0
@@ -159138,6 +159237,7 @@ MonoBehaviour:
   droneBodyAlpha: 1
   stateGhostAlpha: 0.28
   stateGhostAlphaPulse: 0.04
+  stateGhostAppearanceSuppressed: 0
   enableInputToRigDelay: 1
   inputToRigDelayMilliseconds: 500
   useCollisionConsistentStateDelay: 1
@@ -159165,7 +159265,7 @@ MonoBehaviour:
   maxTranslationPredictionWindow: 0.45
   minYawPredictionWindow: 0.05
   maxYawPredictionWindow: 0.2
-  maxPredictionDistance: 3
+  maxPredictionDistance: 0
   useSmoothedPlanarVelocityForPrediction: 0
   predictionRampTime: 0.3
   predictionDirectionStabilityAngleDeg: 55

@@ -79,6 +79,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     [Range(0f, 1f)] public float stateGhostAlpha = 0.28f;
     [FormerlySerializedAs("predictiveGhostAlphaPulse")]
     [Min(0f)] public float stateGhostAlphaPulse = 0.04f;
+    [SerializeField, HideInInspector] bool stateGhostAppearanceSuppressed;
 
     [Header("Input-To-Rig Delay")]
     [Tooltip("Delay only the direct human locomotion command before it moves the XR rig. The predictive ghost stays real-time.")]
@@ -130,8 +131,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     public float minYawPredictionWindow = 0.05f;
     [Tooltip("Maximum forward lookahead for yaw once input is stable.")]
     public float maxYawPredictionWindow = 0.2f;
-    [Tooltip("Hard clamp on how far ahead the ghost can be in one prediction step.")]
-    public float maxPredictionDistance = 3f;
+    [Tooltip("Optional hard clamp on how far ahead the ghost can be in one prediction step. Set to 0 to disable the distance cap.")]
+    [Min(0f)] public float maxPredictionDistance;
     [Tooltip("Use smoothed planar velocity for ghost prediction. Disable for more immediate ghost placement.")]
     public bool useSmoothedPlanarVelocityForPrediction;
     [Tooltip("Time required for sustained input to reach full lookahead confidence.")]
@@ -359,6 +360,7 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     {
         MigrateLegacyInputToRigDelay();
         inputToRigDelayMilliseconds = Mathf.Max(0, inputToRigDelayMilliseconds);
+        maxPredictionDistance = Mathf.Max(0f, maxPredictionDistance);
         predictiveGhostCollisionSteps = Mathf.Clamp(predictiveGhostCollisionSteps, 1, 32);
         activePredictionMethod = predictionMethod;
         activeVisualizationMode = visualizationMode;
@@ -524,6 +526,17 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
         }
     }
 
+    public void SetStateGhostAppearanceSuppressed(bool suppressed)
+    {
+        if (stateGhostAppearanceSuppressed == suppressed)
+        {
+            return;
+        }
+
+        stateGhostAppearanceSuppressed = suppressed;
+        ApplyVisualizationMode(force: true);
+    }
+
     void HandleVisualizationModeSwitchInput()
     {
         if (!allowRuntimeVisualizationHotkeys)
@@ -598,7 +611,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     {
         EnsureGhostModeReferences();
 
-        bool showStateGhost = ShowsStateGhost(visualizationMode);
+        bool showStateGhost = ShowsStateGhost(visualizationMode)
+            && !stateGhostAppearanceSuppressed;
 
         if (showStateGhost)
         {
@@ -1639,6 +1653,15 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
 
     void UpdatePredictiveStateGhostPose(LocomotionCommand command, float dt)
     {
+        if (maxTranslationPredictionWindow <= 1e-5f
+            && maxYawPredictionWindow <= 1e-5f)
+        {
+            // A participant-selected zero horizon must be visually identical to Current.
+            UpdateRealTimeStateGhostPose();
+            SyncStateGhostTransform();
+            return;
+        }
+
         if (!hasGhostPose)
         {
             SnapGhostToRig();
@@ -1716,8 +1739,8 @@ public class PredictiveGhostAvatarLocomotion : MonoBehaviour
     {
         float horizon = Mathf.Max(0f, predictionWindow);
         Vector3 predictionDelta = worldVelocity * horizon;
-        float maxLead = Mathf.Max(0.01f, maxPredictionDistance);
-        if (predictionDelta.sqrMagnitude > maxLead * maxLead)
+        float maxLead = Mathf.Max(0f, maxPredictionDistance);
+        if (maxLead > 0f && predictionDelta.sqrMagnitude > maxLead * maxLead)
         {
             predictionDelta = predictionDelta.normalized * maxLead;
         }

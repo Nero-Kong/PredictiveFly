@@ -6,63 +6,54 @@ using System.IO;
 using System.Text;
 using UnityEngine;
 
-[DefaultExecutionOrder(650)]
+[DefaultExecutionOrder(640)]
 [DisallowMultipleComponent]
 public class PredictiveFlyExperiment2Controller : MonoBehaviour
 {
+    public const string ProtocolVersion = PredictiveFlyExperiment2CalibrationStore.ProtocolVersion;
+    public const int CalibrationDelayCount = 5;
     public const float Experiment1MinTranslationHorizonSeconds = 0.08f;
     public const float Experiment1MaxTranslationHorizonSeconds = 0.45f;
     public const float Experiment1MinYawHorizonSeconds = 0.05f;
     public const float Experiment1MaxYawHorizonSeconds = 0.2f;
 
-    public enum Experiment2State
+    static readonly int[] CalibrationDelayLevelsMilliseconds = { 0, 250, 500, 750, 1000 };
+    static readonly int[,] CalibrationDelayOrders =
+    {
+        { 0, 1, 4, 2, 3 },
+        { 1, 2, 0, 3, 4 },
+        { 2, 3, 1, 4, 0 },
+        { 3, 4, 2, 0, 1 },
+        { 4, 0, 3, 1, 2 },
+        { 3, 2, 4, 1, 0 },
+        { 4, 3, 0, 2, 1 },
+        { 0, 4, 1, 3, 2 },
+        { 1, 0, 2, 4, 3 },
+        { 2, 1, 3, 0, 4 }
+    };
+
+    public enum CalibrationState
     {
         Idle,
-        PreparingCalibration,
+        Preparing,
         Calibrating,
-        CalibrationComplete,
-        PreparingTrial,
-        RunningTrial,
-        TrialCompleted,
-        TrialAborted,
-        SessionCompleted,
+        Complete,
+        Aborted,
         Error
     }
 
-    public enum ProxyStrategy
-    {
-        Current,
-        Fixed,
-        Personalized
-    }
-
-    [Serializable]
-    public struct TrialAssignment
-    {
-        public int participantSequence;
-        public int trialIndex;
-        public int delayMilliseconds;
-        public ProxyStrategy strategy;
-        public IrairaBou3DOfficialSceneBuilder.CourseRouteVariant route;
-        public int canonicalConditionCode;
-        public string conditionLabel;
-    }
-
     [Header("Operator Input")]
-    [Tooltip("Set once per participant. The trailing positive number selects all counterbalancing schedules.")]
-    public string participantId = "E2P001";
-    [Tooltip("Set to 1-6 before each measured trial. Delay, proxy strategy, and route are assigned automatically.")]
-    [Range(1, 6)] public int trialIndex = 1;
-    [Tooltip("Participant ID for which the two visible personalized horizons were calibrated. Set this with the horizons only when recovering a previous session.")]
-    public string calibratedParticipantId;
+    [Tooltip("Set this to the participant ID before starting calibration.")]
+    public string participantId = "P001";
 
     [Header("Keyboard Controls")]
     public bool useKeyboardControls = true;
     public KeyCode beginCalibrationKey = KeyCode.F7;
-    public KeyCode decreaseHorizonKey = KeyCode.LeftBracket;
-    public KeyCode increaseHorizonKey = KeyCode.RightBracket;
+    [Tooltip("Ordinary-key fallback in case the keyboard or Unity intercepts the function key.")]
+    public KeyCode alternateBeginCalibrationKey = KeyCode.K;
+    public KeyCode decreaseHorizonKey = KeyCode.LeftArrow;
+    public KeyCode increaseHorizonKey = KeyCode.RightArrow;
     public KeyCode acceptCalibrationKey = KeyCode.Space;
-    public KeyCode prepareAndStartTrialKey = KeyCode.Return;
     public KeyCode abortKey = KeyCode.Escape;
 
     [Header("Calibration")]
@@ -71,142 +62,150 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
     [Min(0.05f)] public float maximumSelectableHorizonSeconds = 1f;
     [Min(0.01f)] public float horizonStepSeconds = 0.1f;
     [Min(0f)] public float minimumCalibrationRunSeconds = 20f;
-    [Tooltip("After low- and high-anchor runs, add a third mid-anchor run when their accepted values differ by more than this amount.")]
+    [Tooltip("Add a third mid-anchor run when the low- and high-anchor choices differ by more than this amount.")]
     [Min(0f)] public float thirdRunDifferenceThresholdSeconds = 0.2f;
     public IrairaBou3DOfficialSceneBuilder.CourseRouteVariant calibrationRoute =
         IrairaBou3DOfficialSceneBuilder.CourseRouteVariant.Base;
-    [Tooltip("Both delays must be calibrated before any measured trial can begin.")]
-    public bool requireBothCalibrationsBeforeTrials = true;
-    [Tooltip("Locked participant choice for 500 ms. -1 means not calibrated.")]
-    public float selectedHorizon500Seconds = -1f;
-    [Tooltip("Locked participant choice for 1000 ms. -1 means not calibrated.")]
-    public float selectedHorizon1000Seconds = -1f;
 
-    [Header("Fixed Predictor Profile")]
-    [Tooltip("Experiment 1 fixed profile. Both delay levels reuse these exact values; the prediction horizon is additional look-ahead beyond the Current proxy.")]
-    [Min(0f)] public float fixedMinTranslationHorizonSeconds = Experiment1MinTranslationHorizonSeconds;
-    [Min(0f)] public float fixedMaxTranslationHorizonSeconds = Experiment1MaxTranslationHorizonSeconds;
-    [Min(0f)] public float fixedMinYawHorizonSeconds = Experiment1MinYawHorizonSeconds;
-    [Min(0f)] public float fixedMaxYawHorizonSeconds = Experiment1MaxYawHorizonSeconds;
-    public PredictiveGhostAvatarLocomotion.PredictionMethod fixedPredictionMethod =
+    [Header("Personalized Profile Shape")]
+    [Min(0f)] public float referenceMinTranslationHorizonSeconds =
+        Experiment1MinTranslationHorizonSeconds;
+    [Min(0f)] public float referenceMaxTranslationHorizonSeconds =
+        Experiment1MaxTranslationHorizonSeconds;
+    [Min(0f)] public float referenceMinYawHorizonSeconds =
+        Experiment1MinYawHorizonSeconds;
+    [Min(0f)] public float referenceMaxYawHorizonSeconds =
+        Experiment1MaxYawHorizonSeconds;
+    public PredictiveGhostAvatarLocomotion.PredictionMethod predictionMethod =
         PredictiveGhostAvatarLocomotion.PredictionMethod.AccelerationJerkLimited;
 
-    [Header("Trial Lifecycle")]
+    [Header("Run Lifecycle")]
     [Min(0f)] public float minimumPreparationSeconds = 0.75f;
     [Min(0.5f)] public float preparationTimeoutSeconds = 8f;
-    public bool abortOnBodyAnchorLoss = true;
-    [Min(0.1f)] public float trackingLossGraceSeconds = 0.75f;
     public bool recenterAfterRun = true;
-    public bool preventAccidentalCompletedTrialRepeat = true;
 
     [Header("Output")]
-    [Tooltip("The existing four objective CSV files are written below this directory.")]
-    public string objectiveOutputDirectory = "Data/PredictiveFlyExperiment2/Objective";
-    [Tooltip("Participant horizon-adjustment events are written here as a separate calibration CSV.")]
-    public string calibrationOutputDirectory = "Data/PredictiveFlyExperiment2/Calibration";
+    [Tooltip("Calibration CSV files and completed participant profiles are stored here.")]
+    public string calibrationOutputDirectory =
+        PredictiveFlyExperiment2CalibrationStore.DefaultCalibrationOutputDirectory;
 
     [Header("References")]
     public PredictiveGhostAvatarLocomotion locomotion;
-    public PredictiveFlyObjectiveLogger logger;
     public IrairaBou3DOfficialSceneBuilder sceneBuilder;
+    public PredictiveFlyExperiment3Controller experiment3Controller;
     public bool autoFindReferences = true;
 
     [Header("Debug")]
-    [SerializeField] Experiment2State state = Experiment2State.Idle;
-    [SerializeField] string scheduledAssignmentPreview;
-    [SerializeField] string delayOrderPreview;
-    [SerializeField] string status = "Idle";
-    [SerializeField] string activeParticipantId;
-    [SerializeField] int activeTrialIndex;
-    [SerializeField] int activeDelayMilliseconds;
-    [SerializeField] ProxyStrategy activeStrategy;
-    [SerializeField] string activeConditionOrder;
-    [SerializeField] string activeRouteOrder;
-    [SerializeField] string activeRouteId;
-    [SerializeField] float activeMaximumTranslationHorizonSeconds;
-    [SerializeField] int activeCalibrationDelayMilliseconds;
-    [SerializeField] int activeCalibrationRunNumber;
-    [SerializeField] string activeCalibrationAnchor;
-    [SerializeField] float currentCalibrationHorizonSeconds;
-    [SerializeField] string calibrationCsvPath;
-    [SerializeField] string lastCalibrationSaveError;
-    [SerializeField] float trackingLostSince = -1f;
+    [SerializeField, HideInInspector] CalibrationState state = CalibrationState.Idle;
+    [SerializeField, HideInInspector] string status = "Idle";
+    [SerializeField, HideInInspector] string delayOrderPreview;
+    [SerializeField, HideInInspector] string calibratedParticipantId;
+    [SerializeField, HideInInspector] float selectedHorizon0Seconds = -1f;
+    [SerializeField, HideInInspector] float selectedHorizon250Seconds = -1f;
+    [SerializeField, HideInInspector] float selectedHorizon500Seconds = -1f;
+    [SerializeField, HideInInspector] float selectedHorizon750Seconds = -1f;
+    [SerializeField, HideInInspector] float selectedHorizon1000Seconds = -1f;
+    [SerializeField, HideInInspector] int activeDelayMilliseconds;
+    [SerializeField, HideInInspector] int activeRunNumber;
+    [SerializeField, HideInInspector] string activeAnchor;
+    [SerializeField, HideInInspector] float currentHorizonSeconds;
+    [SerializeField, HideInInspector] string calibrationCsvPath;
+    [SerializeField, HideInInspector] string completedProfilePath;
+    [SerializeField, HideInInspector] string lastSaveError;
 
     Coroutine preparationRoutine;
     float calibrationRunStartedAt;
-    int calibrationDelayOrderIndex;
-    int calibrationRunIndexForDelay;
-    int calibrationParticipantSequence;
+    int delayOrderIndex;
+    int runIndexForDelay;
+    int participantSequence;
     string calibrationTimestamp;
 
-    readonly List<float> calibrationSelections500 = new List<float>(3);
-    readonly List<float> calibrationSelections1000 = new List<float>(3);
-    readonly List<CalibrationEventRecord> calibrationEvents = new List<CalibrationEventRecord>(64);
-    readonly HashSet<string> completedTrialKeys =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    readonly List<float> selections0 = new List<float>(3);
+    readonly List<float> selections250 = new List<float>(3);
+    readonly List<float> selections500 = new List<float>(3);
+    readonly List<float> selections750 = new List<float>(3);
+    readonly List<float> selections1000 = new List<float>(3);
+    readonly List<CalibrationEventRecord> calibrationEvents =
+        new List<CalibrationEventRecord>(64);
 
-    static readonly int[,] StrategyPermutations =
-    {
-        { 0, 1, 2 },
-        { 0, 2, 1 },
-        { 1, 0, 2 },
-        { 1, 2, 0 },
-        { 2, 0, 1 },
-        { 2, 1, 0 }
-    };
+    float metricsLastSampleAt;
+    Vector3 lastRealTimePosition;
+    bool hasLastRealTimePosition;
+    float metricDuration;
+    float latestSpeed;
+    float speedIntegral;
+    float maxSpeed;
+    float delayedToRealTimeIntegral;
+    float maxDelayedToRealTime;
+    float realTimeToProxyIntegral;
+    float maxRealTimeToProxy;
+    float delayedToProxyIntegral;
+    float maxDelayedToProxy;
+    float latestDelayedToRealTime;
+    float latestRealTimeToProxy;
+    float latestDelayedToProxy;
 
-    public Experiment2State State => state;
+    public CalibrationState State => state;
     public string Status => status;
-    public string ScheduledAssignmentPreview => scheduledAssignmentPreview;
-    public string ActiveConditionOrder => activeConditionOrder;
-    public string ActiveRouteOrder => activeRouteOrder;
-    public string ActiveRouteId => activeRouteId;
-    public float CurrentCalibrationHorizonSeconds => currentCalibrationHorizonSeconds;
+    public string DelayOrderPreview => delayOrderPreview;
+    public string CalibratedParticipantId => calibratedParticipantId;
+    public float SelectedHorizon0Seconds => selectedHorizon0Seconds;
+    public float SelectedHorizon250Seconds => selectedHorizon250Seconds;
+    public float SelectedHorizon500Seconds => selectedHorizon500Seconds;
+    public float SelectedHorizon750Seconds => selectedHorizon750Seconds;
+    public float SelectedHorizon1000Seconds => selectedHorizon1000Seconds;
+    public int ActiveDelayMilliseconds => activeDelayMilliseconds;
+    public int ActiveRunNumber => activeRunNumber;
+    public string ActiveAnchor => activeAnchor;
+    public float CurrentHorizonSeconds => currentHorizonSeconds;
+    public string CalibrationCsvPath => calibrationCsvPath;
+    public string CompletedProfilePath => completedProfilePath;
+    public bool IsCalibrationActive => state == CalibrationState.Preparing
+        || state == CalibrationState.Calibrating;
 
     void Awake()
     {
         ResolveReferences();
         ConfigureExperimentComponents();
-        UpdateScheduledAssignmentPreview();
+        UpdateDelayOrderPreview();
     }
 
     void OnEnable()
     {
         ResolveReferences();
         ConfigureExperimentComponents();
-        UpdateScheduledAssignmentPreview();
+        UpdateDelayOrderPreview();
     }
 
     void OnValidate()
     {
-        trialIndex = Mathf.Clamp(trialIndex, 1, 6);
         maximumSelectableHorizonSeconds = Mathf.Max(
             minimumSelectableHorizonSeconds + 0.05f,
             maximumSelectableHorizonSeconds);
         horizonStepSeconds = Mathf.Max(0.01f, horizonStepSeconds);
         preparationTimeoutSeconds = Mathf.Max(0.5f, preparationTimeoutSeconds);
-        trackingLossGraceSeconds = Mathf.Max(0.1f, trackingLossGraceSeconds);
-        fixedMaxTranslationHorizonSeconds = Mathf.Max(
-            fixedMinTranslationHorizonSeconds,
-            fixedMaxTranslationHorizonSeconds);
-        fixedMaxYawHorizonSeconds = Mathf.Max(fixedMinYawHorizonSeconds, fixedMaxYawHorizonSeconds);
-        selectedHorizon500Seconds = ClampOptionalHorizon(selectedHorizon500Seconds);
-        selectedHorizon1000Seconds = ClampOptionalHorizon(selectedHorizon1000Seconds);
-        UpdateScheduledAssignmentPreview();
+        referenceMaxTranslationHorizonSeconds = Mathf.Max(
+            referenceMinTranslationHorizonSeconds,
+            referenceMaxTranslationHorizonSeconds);
+        referenceMaxYawHorizonSeconds = Mathf.Max(
+            referenceMinYawHorizonSeconds,
+            referenceMaxYawHorizonSeconds);
+        UpdateDelayOrderPreview();
     }
 
     void Update()
     {
         EnsureExperiment1ControllerDisabled();
 
-        if (useKeyboardControls && Input.GetKeyDown(abortKey))
+        if (useKeyboardControls && Input.GetKeyDown(abortKey) && IsCalibrationActive)
         {
-            AbortActiveRun("Experimenter abort key pressed.");
+            AbortCalibration("Experimenter abort key pressed.");
             return;
         }
 
-        if (state == Experiment2State.Calibrating)
+        if (state == CalibrationState.Calibrating)
         {
+            UpdateRunMetrics();
             if (useKeyboardControls && Input.GetKeyDown(decreaseHorizonKey))
             {
                 AdjustCalibrationHorizon(-1);
@@ -222,43 +221,11 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             return;
         }
 
-        if (useKeyboardControls && Input.GetKeyDown(beginCalibrationKey))
+        if (useKeyboardControls
+            && (IsKeyDown(beginCalibrationKey) || IsKeyDown(alternateBeginCalibrationKey)))
         {
             BeginCalibrationSequence();
         }
-
-        if (useKeyboardControls && Input.GetKeyDown(prepareAndStartTrialKey))
-        {
-            PrepareAndStartTrial();
-        }
-
-        if (state != Experiment2State.RunningTrial)
-        {
-            return;
-        }
-
-        if (logger != null && !logger.IsLogging)
-        {
-            if (logger.FinishReached && logger.CompletedDataSaved)
-            {
-                CompleteTrial();
-            }
-            else if (logger.FinishReached)
-            {
-                FailCompletedTrialSave();
-            }
-            else
-            {
-                locomotion?.SetLocomotionInputEnabled(false);
-                state = Experiment2State.TrialAborted;
-                status = logger.LastTrialDataSaved
-                    ? "Trial ended before the finish. Incomplete objective data were saved."
-                    : "Trial ended before the finish, and incomplete objective data could not be saved.";
-            }
-            return;
-        }
-
-        MonitorTracking();
     }
 
     [ContextMenu("Begin Experiment 2 Calibration")]
@@ -269,43 +236,84 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             SetWarning("Enter Play Mode before starting calibration.");
             return;
         }
-
-        if (IsRunActive())
+        if (IsCalibrationActive)
         {
-            SetWarning("A calibration or measured trial is already active.");
+            SetWarning("A calibration sequence is already active.");
             return;
         }
 
         ResolveReferences();
         ConfigureExperimentComponents();
-        if (!TryValidateCommonSetup(false, out string validationMessage))
+        if (experiment3Controller != null && experiment3Controller.IsFormalRunActive)
+        {
+            SetWarning("A measured Experiment 3 trial is active. Finish or abort it before Experiment 2.");
+            return;
+        }
+        if (!TryValidateStaticConfiguration(out string validationMessage))
         {
             SetError(validationMessage);
             return;
         }
-
-        if (!TryResolveParticipantSequenceNumber(out calibrationParticipantSequence))
+        if (!TryResolveParticipantSequenceNumber(out participantSequence))
         {
-            SetError("Participant ID must end with a positive number, for example E2P001.");
+            SetError("Participant ID must end with a positive number, for example P001.");
+            return;
+        }
+        if (!PredictiveFlyExperiment2CalibrationStore.TryInvalidateCompletedProfile(
+                participantId,
+                calibrationOutputDirectory,
+                out string invalidateMessage))
+        {
+            SetError(invalidateMessage);
             return;
         }
 
+        selectedHorizon0Seconds = -1f;
+        selectedHorizon250Seconds = -1f;
         selectedHorizon500Seconds = -1f;
+        selectedHorizon750Seconds = -1f;
         selectedHorizon1000Seconds = -1f;
         calibratedParticipantId = participantId.Trim();
-        calibrationSelections500.Clear();
-        calibrationSelections1000.Clear();
+        selections0.Clear();
+        selections250.Clear();
+        selections500.Clear();
+        selections750.Clear();
+        selections1000.Clear();
         calibrationEvents.Clear();
-        calibrationDelayOrderIndex = 0;
-        calibrationRunIndexForDelay = 0;
-        calibrationTimestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+        delayOrderIndex = 0;
+        runIndexForDelay = 0;
+        calibrationTimestamp = DateTime.Now.ToString(
+            "yyyyMMdd_HHmmss_fff",
+            CultureInfo.InvariantCulture);
+        string directory = PredictiveFlyExperiment2CalibrationStore.ResolveDirectory(
+            calibrationOutputDirectory);
         calibrationCsvPath = Path.Combine(
-            ResolveDirectory(calibrationOutputDirectory, "Data/PredictiveFlyExperiment2/Calibration"),
-            $"{Sanitize(calibratedParticipantId)}_{calibrationTimestamp}_experiment2_calibration.csv");
-        lastCalibrationSaveError = string.Empty;
+            directory,
+            $"{PredictiveFlyExperiment2CalibrationStore.Sanitize(calibratedParticipantId)}_"
+            + $"{calibrationTimestamp}_experiment2_calibration.csv");
+        completedProfilePath = PredictiveFlyExperiment2CalibrationStore.GetProfilePath(
+            calibratedParticipantId,
+            calibrationOutputDirectory);
+        lastSaveError = string.Empty;
 
-        AddCalibrationEvent("sequence_start", 0, 0, string.Empty, 0f, float.NaN,
-            $"delay_order={GetDelayOrderString(calibrationParticipantSequence)}");
+        AddCalibrationEvent(
+            "sequence_start",
+            -1,
+            0,
+            string.Empty,
+            0f,
+            float.NaN,
+            $"delay_order={GetDelayOrderString(participantSequence)};{invalidateMessage}");
+        if (!string.IsNullOrEmpty(lastSaveError))
+        {
+            SetError($"Calibration could not start because its CSV was not saved: {lastSaveError}");
+            return;
+        }
+
+        Debug.Log(
+            $"[PredictiveFlyExperiment2Controller] Experiment 2 sequence accepted for "
+            + $"{calibratedParticipantId}; preparing the first run.",
+            this);
         StartCalibrationRun();
     }
 
@@ -323,30 +331,31 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
 
     public void AdjustCalibrationHorizon(int stepDirection)
     {
-        if (state != Experiment2State.Calibrating || stepDirection == 0)
+        if (state != CalibrationState.Calibrating || stepDirection == 0)
         {
             return;
         }
 
         float next = RoundHorizon(
-            currentCalibrationHorizonSeconds + Mathf.Sign(stepDirection) * horizonStepSeconds,
+            currentHorizonSeconds + Mathf.Sign(stepDirection) * horizonStepSeconds,
             minimumSelectableHorizonSeconds,
             maximumSelectableHorizonSeconds,
             horizonStepSeconds);
-        if (Mathf.Approximately(next, currentCalibrationHorizonSeconds))
+        if (Mathf.Approximately(next, currentHorizonSeconds))
         {
             return;
         }
 
-        currentCalibrationHorizonSeconds = next;
-        ApplyPersonalizedPredictionProfile(currentCalibrationHorizonSeconds);
+        currentHorizonSeconds = next;
+        ApplyPersonalizedPredictionProfile(currentHorizonSeconds);
+        UpdateCalibrationProxyAppearance();
         AddCalibrationEvent(
             "adjustment",
-            activeCalibrationDelayMilliseconds,
-            activeCalibrationRunNumber,
-            activeCalibrationAnchor,
+            activeDelayMilliseconds,
+            activeRunNumber,
+            activeAnchor,
             Time.unscaledTime - calibrationRunStartedAt,
-            currentCalibrationHorizonSeconds,
+            currentHorizonSeconds,
             string.Empty);
         status = BuildCalibrationStatus("Adjusting");
     }
@@ -354,7 +363,7 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
     [ContextMenu("Accept Calibration Run")]
     public void AcceptCalibrationRun()
     {
-        if (state != Experiment2State.Calibrating)
+        if (state != CalibrationState.Calibrating)
         {
             return;
         }
@@ -362,25 +371,32 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         float elapsed = Time.unscaledTime - calibrationRunStartedAt;
         if (elapsed + 1e-4f < minimumCalibrationRunSeconds)
         {
-            SetWarning($"Continue calibration for at least {minimumCalibrationRunSeconds:0.#} seconds ({elapsed:0.#} elapsed)." );
+            SetWarning(
+                $"Continue calibration for at least {minimumCalibrationRunSeconds:0.#} seconds "
+                + $"({elapsed:0.#} elapsed).");
             return;
         }
 
-        currentCalibrationHorizonSeconds = RoundHorizon(
-            currentCalibrationHorizonSeconds,
+        currentHorizonSeconds = RoundHorizon(
+            currentHorizonSeconds,
             minimumSelectableHorizonSeconds,
             maximumSelectableHorizonSeconds,
             horizonStepSeconds);
-        List<float> selections = GetCalibrationSelections(activeCalibrationDelayMilliseconds);
-        selections.Add(currentCalibrationHorizonSeconds);
+        List<float> selections = GetSelections(activeDelayMilliseconds);
+        selections.Add(currentHorizonSeconds);
         AddCalibrationEvent(
             "run_accept",
-            activeCalibrationDelayMilliseconds,
-            activeCalibrationRunNumber,
-            activeCalibrationAnchor,
+            activeDelayMilliseconds,
+            activeRunNumber,
+            activeAnchor,
             elapsed,
-            currentCalibrationHorizonSeconds,
+            currentHorizonSeconds,
             string.Empty);
+        if (!string.IsNullOrEmpty(lastSaveError))
+        {
+            SetError($"Calibration run could not be accepted because its CSV was not saved: {lastSaveError}");
+            return;
+        }
 
         locomotion.SetLocomotionInputEnabled(false);
         if (recenterAfterRun)
@@ -388,10 +404,11 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             locomotion.RecenterNow();
         }
 
-        calibrationRunIndexForDelay++;
+        runIndexForDelay++;
         bool needsAnotherAnchoredRun = selections.Count < 2;
         bool needsThirdRun = selections.Count == 2
-            && Mathf.Abs(selections[0] - selections[1]) > thirdRunDifferenceThresholdSeconds + 1e-5f;
+            && Mathf.Abs(selections[0] - selections[1])
+                > thirdRunDifferenceThresholdSeconds + 1e-5f;
         if (needsAnotherAnchoredRun || needsThirdRun)
         {
             StartCalibrationRun();
@@ -403,37 +420,99 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             minimumSelectableHorizonSeconds,
             maximumSelectableHorizonSeconds,
             horizonStepSeconds);
-        SetSelectedHorizon(activeCalibrationDelayMilliseconds, lockedHorizon);
+        SetSelectedHorizon(activeDelayMilliseconds, lockedHorizon);
         AddCalibrationEvent(
             "selection_locked",
-            activeCalibrationDelayMilliseconds,
-            activeCalibrationRunNumber,
-            activeCalibrationAnchor,
+            activeDelayMilliseconds,
+            activeRunNumber,
+            activeAnchor,
             elapsed,
-            currentCalibrationHorizonSeconds,
+            currentHorizonSeconds,
             $"selected_horizon_s={lockedHorizon.ToString("0.000", CultureInfo.InvariantCulture)}");
+        if (!string.IsNullOrEmpty(lastSaveError))
+        {
+            SetError($"Locked calibration value could not be saved: {lastSaveError}");
+            return;
+        }
 
-        calibrationDelayOrderIndex++;
-        calibrationRunIndexForDelay = 0;
-        if (calibrationDelayOrderIndex < 2)
+        delayOrderIndex++;
+        runIndexForDelay = 0;
+        if (delayOrderIndex < CalibrationDelayCount)
         {
             StartCalibrationRun();
             return;
         }
 
-        ApplyFixedPredictionProfile();
+        CompleteCalibrationSequence();
+    }
+
+    void CompleteCalibrationSequence()
+    {
+        ApplyCurrentPredictionProfile();
+        locomotion.SetStateGhostAppearanceSuppressed(false);
         locomotion.RecenterNow();
-        state = Experiment2State.CalibrationComplete;
-        status = $"Calibration complete: 500 ms={selectedHorizon500Seconds:0.0} s, 1000 ms={selectedHorizon1000Seconds:0.0} s. Set Trial Index and press Enter.";
         AddCalibrationEvent(
             "sequence_complete",
-            0,
+            -1,
             0,
             string.Empty,
             0f,
             float.NaN,
-            $"h500={selectedHorizon500Seconds:0.000};h1000={selectedHorizon1000Seconds:0.000}");
-        UpdateScheduledAssignmentPreview();
+            $"protocol={ProtocolVersion};h0={selectedHorizon0Seconds:0.000};"
+            + $"h250={selectedHorizon250Seconds:0.000};"
+            + $"h500={selectedHorizon500Seconds:0.000};"
+            + $"h750={selectedHorizon750Seconds:0.000};"
+            + $"h1000={selectedHorizon1000Seconds:0.000}");
+        if (!string.IsNullOrEmpty(lastSaveError) || !File.Exists(calibrationCsvPath))
+        {
+            SetError(
+                "Calibration values were selected, but the completion CSV could not be saved. "
+                + $"Formal trials remain locked. {lastSaveError}");
+            return;
+        }
+
+        PredictiveFlyExperiment2CalibrationStore.CompletedCalibrationProfile profile =
+            new PredictiveFlyExperiment2CalibrationStore.CompletedCalibrationProfile
+            {
+                protocolVersion = ProtocolVersion,
+                completed = true,
+                participantId = calibratedParticipantId,
+                completedAt = DateTime.Now.ToString("o", CultureInfo.InvariantCulture),
+                calibrationCsvFileName = Path.GetFileName(calibrationCsvPath),
+                selectedHorizon0Seconds = selectedHorizon0Seconds,
+                selectedHorizon250Seconds = selectedHorizon250Seconds,
+                selectedHorizon500Seconds = selectedHorizon500Seconds,
+                selectedHorizon750Seconds = selectedHorizon750Seconds,
+                selectedHorizon1000Seconds = selectedHorizon1000Seconds,
+                minimumSelectableHorizonSeconds = minimumSelectableHorizonSeconds,
+                maximumSelectableHorizonSeconds = maximumSelectableHorizonSeconds,
+                horizonStepSeconds = horizonStepSeconds,
+                referenceMinTranslationHorizonSeconds = referenceMinTranslationHorizonSeconds,
+                referenceMaxTranslationHorizonSeconds = referenceMaxTranslationHorizonSeconds,
+                referenceMinYawHorizonSeconds = referenceMinYawHorizonSeconds,
+                referenceMaxYawHorizonSeconds = referenceMaxYawHorizonSeconds,
+                predictionMethod = (int)predictionMethod
+            };
+        if (!PredictiveFlyExperiment2CalibrationStore.TrySaveCompletedProfile(
+                profile,
+                calibrationOutputDirectory,
+                out completedProfilePath,
+                out string saveMessage))
+        {
+            SetError(
+                $"Calibration completion profile was not saved. Formal trials remain locked. {saveMessage}");
+            return;
+        }
+
+        state = CalibrationState.Complete;
+        status = $"Calibration complete and saved locally for {calibratedParticipantId}: "
+            + $"0 ms={selectedHorizon0Seconds:0.0} s, "
+            + $"250 ms={selectedHorizon250Seconds:0.0} s, "
+            + $"500 ms={selectedHorizon500Seconds:0.0} s, "
+            + $"750 ms={selectedHorizon750Seconds:0.0} s, "
+            + $"1000 ms={selectedHorizon1000Seconds:0.0} s. Experiment 3 is unlocked.";
+        experiment3Controller?.TryRefreshCalibrationFromDisk(out _);
+        Debug.Log($"[PredictiveFlyExperiment2Controller] {status}", this);
     }
 
     void StartCalibrationRun()
@@ -447,18 +526,18 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
 
     IEnumerator PrepareCalibrationRunRoutine()
     {
-        state = Experiment2State.PreparingCalibration;
-        trackingLostSince = -1f;
-        activeCalibrationDelayMilliseconds = GetDelayForOrderPosition(
-            calibrationParticipantSequence,
-            calibrationDelayOrderIndex);
-        activeCalibrationRunNumber = calibrationRunIndexForDelay + 1;
-        activeCalibrationAnchor = GetCalibrationAnchor(
-            calibrationParticipantSequence,
-            calibrationDelayOrderIndex,
-            calibrationRunIndexForDelay);
-        currentCalibrationHorizonSeconds = GetAnchorHorizon(activeCalibrationAnchor);
-        status = $"Preparing {activeCalibrationDelayMilliseconds} ms calibration run {activeCalibrationRunNumber} ({activeCalibrationAnchor}).";
+        state = CalibrationState.Preparing;
+        activeDelayMilliseconds = GetCalibrationDelayForOrderPosition(
+            participantSequence,
+            delayOrderIndex);
+        activeRunNumber = runIndexForDelay + 1;
+        activeAnchor = GetCalibrationAnchor(
+            participantSequence,
+            delayOrderIndex,
+            runIndexForDelay);
+        currentHorizonSeconds = GetAnchorHorizon(activeAnchor);
+        status = $"Preparing {activeDelayMilliseconds} ms calibration run "
+            + $"{activeRunNumber} ({activeAnchor}).";
 
         if (sceneBuilder.routeVariant != calibrationRoute)
         {
@@ -471,248 +550,54 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         }
 
         sceneBuilder.NormalizeCourseVisualMaterials();
-        ConfigureLocomotionForDelay(activeCalibrationDelayMilliseconds);
-        ApplyPersonalizedPredictionProfile(currentCalibrationHorizonSeconds);
+        ConfigureLocomotionForDelay(activeDelayMilliseconds);
+        ApplyPersonalizedPredictionProfile(currentHorizonSeconds);
         locomotion.SetVisualizationMode(
             PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithPredictiveGhost);
+        UpdateCalibrationProxyAppearance();
         locomotion.SetLocomotionInputEnabled(false);
         locomotion.RecenterNow();
 
-        if (!TryValidateCommonSetup(false, out string validationMessage))
+        if (!TryValidateStaticConfiguration(out string validationMessage))
         {
             FailPreparation(validationMessage);
             yield break;
         }
 
-        if (!TryWaitForPreparation())
+        if (!IsPreparationReady())
         {
             yield return WaitForPreparationRoutine();
         }
-
         if (!locomotion.InputToRigDelayBufferReady || !locomotion.IsBodyAnchorAvailable)
         {
-            FailPreparation("Calibration preparation timed out: delay buffer or body anchor was not ready.");
+            FailPreparation(
+                "Calibration preparation timed out: delay buffer or body anchor was not ready.");
             yield break;
         }
 
         locomotion.SetLocomotionInputEnabled(true);
         calibrationRunStartedAt = Time.unscaledTime;
-        state = Experiment2State.Calibrating;
+        ResetRunMetrics();
+        state = CalibrationState.Calibrating;
         AddCalibrationEvent(
             "run_start",
-            activeCalibrationDelayMilliseconds,
-            activeCalibrationRunNumber,
-            activeCalibrationAnchor,
+            activeDelayMilliseconds,
+            activeRunNumber,
+            activeAnchor,
             0f,
-            currentCalibrationHorizonSeconds,
+            currentHorizonSeconds,
             string.Empty);
+        if (!string.IsNullOrEmpty(lastSaveError))
+        {
+            locomotion.SetLocomotionInputEnabled(false);
+            SetError($"Calibration run CSV could not be saved: {lastSaveError}");
+            yield break;
+        }
         status = BuildCalibrationStatus("Running");
+        Debug.Log(
+            $"[PredictiveFlyExperiment2Controller] {status} Locomotion input is enabled.",
+            this);
         preparationRoutine = null;
-    }
-
-    [ContextMenu("Prepare And Start Experiment 2 Trial")]
-    public void PrepareAndStartTrial()
-    {
-        if (!Application.isPlaying)
-        {
-            SetWarning("Enter Play Mode before starting a measured trial.");
-            return;
-        }
-
-        if (IsRunActive())
-        {
-            SetWarning("A calibration or measured trial is already active.");
-            return;
-        }
-
-        string requestedParticipantId = participantId != null ? participantId.Trim() : string.Empty;
-        if (preventAccidentalCompletedTrialRepeat
-            && completedTrialKeys.Contains(GetTrialKey(requestedParticipantId, trialIndex)))
-        {
-            SetWarning($"Trial {trialIndex} already completed for {requestedParticipantId}. Change Trial Index before pressing Enter.");
-            return;
-        }
-
-        ResolveReferences();
-        ConfigureExperimentComponents();
-        if (!TryValidateTrialSetup(out string validationMessage))
-        {
-            SetError(validationMessage);
-            return;
-        }
-
-        if (preparationRoutine != null)
-        {
-            StopCoroutine(preparationRoutine);
-        }
-        preparationRoutine = StartCoroutine(PrepareTrialRoutine());
-    }
-
-    IEnumerator PrepareTrialRoutine()
-    {
-        state = Experiment2State.PreparingTrial;
-        status = "Resolving Experiment 2 delay, proxy strategy, and route assignment.";
-        trackingLostSince = -1f;
-
-        if (!TryResolveParticipantSequenceNumber(out int sequenceNumber)
-            || !TryGetTrialAssignment(sequenceNumber, trialIndex, out TrialAssignment assignment))
-        {
-            FailPreparation("Participant ID or Trial Index could not be resolved.");
-            yield break;
-        }
-
-        activeParticipantId = participantId.Trim();
-        activeTrialIndex = Mathf.Clamp(trialIndex, 1, 6);
-        activeDelayMilliseconds = assignment.delayMilliseconds;
-        activeStrategy = assignment.strategy;
-        activeConditionOrder = GetConditionOrderString(sequenceNumber);
-        activeRouteOrder = GetRouteOrderString(sequenceNumber);
-
-        if (sceneBuilder.routeVariant != assignment.route)
-        {
-            status = $"Building scheduled route {RouteCode(assignment.route)}.";
-            locomotion.SetLocomotionInputEnabled(false);
-            sceneBuilder.routeVariant = assignment.route;
-            sceneBuilder.RebuildScene();
-            yield return null;
-            ResolveReferences();
-            ConfigureExperimentComponents();
-            if (!TryValidateCommonSetup(true, out string rebuiltValidationMessage))
-            {
-                FailPreparation($"Scheduled route rebuild failed: {rebuiltValidationMessage}");
-                yield break;
-            }
-        }
-
-        sceneBuilder.NormalizeCourseVisualMaterials();
-        activeRouteId = sceneBuilder.RouteId;
-        ApplyTrialAssignment(assignment);
-
-        status = "Preparing condition, calibration, and delay buffer.";
-        if (!TryWaitForPreparation())
-        {
-            yield return WaitForPreparationRoutine();
-        }
-
-        if (!locomotion.InputToRigDelayBufferReady || !locomotion.IsBodyAnchorAvailable)
-        {
-            FailPreparation("Trial preparation timed out: delay buffer or body anchor was not ready.");
-            yield break;
-        }
-
-        string conditionLabel = GetConditionLabel(assignment);
-        string configId = BuildExperimentConfigId(assignment);
-        logger.conditionLabelOverride = conditionLabel;
-        logger.SetTrialMetadata(
-            activeParticipantId,
-            activeTrialIndex,
-            1,
-            activeRouteId,
-            activeRouteOrder,
-            activeConditionOrder,
-            configId);
-        logger.StartLogging();
-        if (!logger.IsLogging)
-        {
-            locomotion.SetLocomotionInputEnabled(false);
-            FailPreparation("Objective logger failed to start.");
-            yield break;
-        }
-
-        locomotion.SetLocomotionInputEnabled(true);
-        logger.RecordSystemEvent(
-            "experiment2_trial_input_enabled",
-            BuildTrialEventNote(assignment));
-        state = Experiment2State.RunningTrial;
-        status = $"Trial {activeTrialIndex} running: {conditionLabel}, {activeRouteId}.";
-        preparationRoutine = null;
-    }
-
-    void ApplyTrialAssignment(TrialAssignment assignment)
-    {
-        ConfigureLocomotionForDelay(assignment.delayMilliseconds);
-        switch (assignment.strategy)
-        {
-            case ProxyStrategy.Current:
-                ApplyCurrentPredictionProfile();
-                locomotion.SetVisualizationMode(
-                    PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithRealTimeGhost);
-                activeMaximumTranslationHorizonSeconds = 0f;
-                break;
-            case ProxyStrategy.Fixed:
-                ApplyFixedPredictionProfile();
-                locomotion.SetVisualizationMode(
-                    PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithPredictiveGhost);
-                activeMaximumTranslationHorizonSeconds = fixedMaxTranslationHorizonSeconds;
-                break;
-            default:
-                float selected = GetSelectedHorizon(assignment.delayMilliseconds);
-                ApplyPersonalizedPredictionProfile(selected);
-                locomotion.SetVisualizationMode(
-                    PredictiveGhostAvatarLocomotion.GhostVisualizationMode.DelayedWithPredictiveGhost);
-                activeMaximumTranslationHorizonSeconds = selected;
-                break;
-        }
-
-        locomotion.SetLocomotionInputEnabled(false);
-        locomotion.RecenterNow();
-    }
-
-    void ApplyCurrentPredictionProfile()
-    {
-        if (locomotion == null)
-        {
-            return;
-        }
-
-        // Current displays the real-time remote estimate with no additional future extrapolation.
-        locomotion.minTranslationPredictionWindow = 0f;
-        locomotion.maxTranslationPredictionWindow = 0f;
-        locomotion.minYawPredictionWindow = 0f;
-        locomotion.maxYawPredictionWindow = 0f;
-    }
-
-    void ConfigureLocomotionForDelay(int delayMilliseconds)
-    {
-        locomotion.allowRuntimeVisualizationHotkeys = false;
-        locomotion.allowRuntimePredictionHotkey = false;
-        locomotion.enableInputToRigDelay = true;
-        locomotion.inputToRigDelayMilliseconds = Mathf.Max(0, delayMilliseconds);
-        locomotion.useCollisionConsistentStateDelay = true;
-        locomotion.SetPredictionMethod(fixedPredictionMethod);
-    }
-
-    void ApplyFixedPredictionProfile()
-    {
-        if (locomotion == null)
-        {
-            return;
-        }
-
-        locomotion.minTranslationPredictionWindow = fixedMinTranslationHorizonSeconds;
-        locomotion.maxTranslationPredictionWindow = fixedMaxTranslationHorizonSeconds;
-        locomotion.minYawPredictionWindow = fixedMinYawHorizonSeconds;
-        locomotion.maxYawPredictionWindow = fixedMaxYawHorizonSeconds;
-    }
-
-    void ApplyPersonalizedPredictionProfile(float selectedMaxTranslationHorizon)
-    {
-        if (locomotion == null)
-        {
-            return;
-        }
-
-        float selected = Mathf.Clamp(
-            selectedMaxTranslationHorizon,
-            minimumSelectableHorizonSeconds,
-            maximumSelectableHorizonSeconds);
-        float scale = fixedMaxTranslationHorizonSeconds > 1e-5f
-            ? selected / fixedMaxTranslationHorizonSeconds
-            : 0f;
-        locomotion.minTranslationPredictionWindow = fixedMinTranslationHorizonSeconds * scale;
-        locomotion.maxTranslationPredictionWindow = selected;
-        locomotion.minYawPredictionWindow = fixedMinYawHorizonSeconds * scale;
-        locomotion.maxYawPredictionWindow = fixedMaxYawHorizonSeconds * scale;
     }
 
     IEnumerator WaitForPreparationRoutine()
@@ -723,7 +608,8 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             bool minimumTimeReached = Time.unscaledTime - startedAt >= minimumPreparationSeconds;
             bool delayReady = locomotion != null && locomotion.InputToRigDelayBufferReady;
             bool trackingReady = locomotion != null && locomotion.IsBodyAnchorAvailable;
-            status = $"Preparing: delay={(delayReady ? "ready" : "filling")}, body={(trackingReady ? "tracked" : "missing")}";
+            status = $"Preparing calibration: delay={(delayReady ? "ready" : "filling")}, "
+                + $"body={(trackingReady ? "tracked" : "missing")}";
             if (minimumTimeReached && delayReady && trackingReady)
             {
                 yield break;
@@ -732,7 +618,7 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         }
     }
 
-    bool TryWaitForPreparation()
+    bool IsPreparationReady()
     {
         return minimumPreparationSeconds <= 0f
             && locomotion != null
@@ -740,229 +626,97 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             && locomotion.IsBodyAnchorAvailable;
     }
 
-    [ContextMenu("Abort Experiment 2 Run")]
-    public void AbortActiveRunFromInspector()
+    [ContextMenu("Abort Experiment 2 Calibration")]
+    public void AbortCalibrationFromInspector()
     {
-        AbortActiveRun("Experimenter aborted the run from the Inspector.");
+        AbortCalibration("Experimenter aborted calibration from the Inspector.");
     }
 
-    public void AbortActiveRun(string reason)
+    public void AbortCalibration(string reason)
     {
+        if (!IsCalibrationActive)
+        {
+            return;
+        }
         if (preparationRoutine != null)
         {
             StopCoroutine(preparationRoutine);
             preparationRoutine = null;
         }
 
-        bool calibrationActive = state == Experiment2State.PreparingCalibration
-            || state == Experiment2State.Calibrating;
-        bool trialActive = state == Experiment2State.PreparingTrial
-            || state == Experiment2State.RunningTrial;
-        if (!calibrationActive && !trialActive)
-        {
-            return;
-        }
-
-        if (calibrationActive)
-        {
-            AddCalibrationEvent(
-                "sequence_abort",
-                activeCalibrationDelayMilliseconds,
-                activeCalibrationRunNumber,
-                activeCalibrationAnchor,
-                state == Experiment2State.Calibrating
-                    ? Time.unscaledTime - calibrationRunStartedAt
-                    : 0f,
-                currentCalibrationHorizonSeconds,
-                reason);
-        }
-
-        if (logger != null && logger.IsLogging)
-        {
-            logger.RecordSystemEvent("experiment2_trial_aborted", reason);
-            logger.StopLogging(false);
-        }
-
-        if (locomotion != null)
-        {
-            locomotion.SetLocomotionInputEnabled(false);
-            ApplyFixedPredictionProfile();
-            if (recenterAfterRun)
-            {
-                locomotion.RecenterNow();
-            }
-        }
-
-        state = Experiment2State.TrialAborted;
-        status = logger != null && logger.LastTrialDataSaved
-            ? $"{reason} Incomplete objective data were saved."
-            : reason;
-    }
-
-    void CompleteTrial()
-    {
-        if (state != Experiment2State.RunningTrial)
-        {
-            return;
-        }
-
-        locomotion.SetLocomotionInputEnabled(false);
-        ApplyFixedPredictionProfile();
+        AddCalibrationEvent(
+            "sequence_abort",
+            activeDelayMilliseconds,
+            activeRunNumber,
+            activeAnchor,
+            state == CalibrationState.Calibrating
+                ? Time.unscaledTime - calibrationRunStartedAt
+                : 0f,
+            currentHorizonSeconds,
+            reason);
+        locomotion?.SetLocomotionInputEnabled(false);
+        ApplyCurrentPredictionProfile();
+        locomotion?.SetStateGhostAppearanceSuppressed(false);
         if (recenterAfterRun)
         {
-            locomotion.RecenterNow();
+            locomotion?.RecenterNow();
         }
-
-        completedTrialKeys.Add(GetTrialKey(activeParticipantId, activeTrialIndex));
-        int completedForParticipant = 0;
-        for (int i = 1; i <= 6; i++)
-        {
-            if (completedTrialKeys.Contains(GetTrialKey(activeParticipantId, i)))
-            {
-                completedForParticipant++;
-            }
-        }
-
-        state = completedForParticipant == 6
-            ? Experiment2State.SessionCompleted
-            : Experiment2State.TrialCompleted;
-        status = state == Experiment2State.SessionCompleted
-            ? "All six measured Experiment 2 trials completed."
-            : $"Trial {activeTrialIndex} completed. Set Trial Index to the next value when ready.";
+        state = CalibrationState.Aborted;
+        status = $"{reason} No completed profile was created; Experiment 3 remains locked.";
     }
 
-    void FailCompletedTrialSave()
+    [ContextMenu("Check Saved Calibration")]
+    public void CheckSavedCalibrationFromInspector()
     {
-        locomotion.SetLocomotionInputEnabled(false);
-        if (recenterAfterRun)
+        if (TryCheckSavedCalibration(out string message))
         {
-            locomotion.RecenterNow();
+            status = message;
+            Debug.Log($"[PredictiveFlyExperiment2Controller] {message}", this);
         }
-
-        state = Experiment2State.Error;
-        string detail = string.IsNullOrWhiteSpace(logger.LastSaveError)
-            ? "Unknown file output error."
-            : logger.LastSaveError;
-        status = $"Course completed, but objective data were not saved: {detail}";
-        Debug.LogError($"[PredictiveFlyExperiment2Controller] {status}", this);
-    }
-
-    void MonitorTracking()
-    {
-        if (!abortOnBodyAnchorLoss || locomotion == null)
+        else
         {
-            return;
-        }
-
-        if (locomotion.IsBodyAnchorAvailable)
-        {
-            trackingLostSince = -1f;
-            return;
-        }
-
-        if (trackingLostSince < 0f)
-        {
-            trackingLostSince = Time.unscaledTime;
-            logger?.RecordSystemEvent("tracking_loss_grace_started", "Body anchor became unavailable.");
-            return;
-        }
-
-        if (Time.unscaledTime - trackingLostSince >= trackingLossGraceSeconds)
-        {
-            AbortActiveRun($"Body anchor tracking was lost for {trackingLossGraceSeconds:0.###} seconds.");
+            SetWarning(message);
         }
     }
 
-    public bool TryValidateTrialSetup(out string message)
+    public bool TryCheckSavedCalibration(out string message)
     {
-        if (!TryValidateCommonSetup(true, out message))
+        if (!PredictiveFlyExperiment2CalibrationStore.TryLoadCompletedProfile(
+                participantId,
+                calibrationOutputDirectory,
+                out PredictiveFlyExperiment2CalibrationStore.CompletedCalibrationProfile profile,
+                out completedProfilePath,
+                out message))
         {
             return false;
         }
 
-        if (trialIndex < 1 || trialIndex > 6)
-        {
-            message = "Trial Index must be between 1 and 6.";
-            return false;
-        }
-
-        if (requireBothCalibrationsBeforeTrials)
-        {
-            if (!string.Equals(
-                    calibratedParticipantId?.Trim(),
-                    participantId?.Trim(),
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                message = "The visible personalized horizons belong to another participant. Run calibration for this Participant ID.";
-                return false;
-            }
-            if (selectedHorizon500Seconds < 0f || selectedHorizon1000Seconds < 0f)
-            {
-                message = "Both 500 ms and 1000 ms personalized horizons must be calibrated before measured trials.";
-                return false;
-            }
-        }
-
-        if (TryResolveParticipantSequenceNumber(out int sequenceNumber)
-            && TryGetTrialAssignment(sequenceNumber, trialIndex, out TrialAssignment assignment)
-            && assignment.strategy == ProxyStrategy.Personalized
-            && GetSelectedHorizon(assignment.delayMilliseconds) < 0f)
-        {
-            message = $"The {assignment.delayMilliseconds} ms personalized horizon has not been calibrated.";
-            return false;
-        }
-
-        message = "Ready";
+        calibratedParticipantId = profile.participantId;
+        selectedHorizon0Seconds = profile.selectedHorizon0Seconds;
+        selectedHorizon250Seconds = profile.selectedHorizon250Seconds;
+        selectedHorizon500Seconds = profile.selectedHorizon500Seconds;
+        selectedHorizon750Seconds = profile.selectedHorizon750Seconds;
+        selectedHorizon1000Seconds = profile.selectedHorizon1000Seconds;
+        calibrationCsvPath = Path.Combine(
+            PredictiveFlyExperiment2CalibrationStore.ResolveDirectory(calibrationOutputDirectory),
+            profile.calibrationCsvFileName);
+        message = $"Saved calibration is complete for {profile.participantId}: "
+            + $"0 ms={profile.selectedHorizon0Seconds:0.0} s, "
+            + $"250 ms={profile.selectedHorizon250Seconds:0.0} s, "
+            + $"500 ms={profile.selectedHorizon500Seconds:0.0} s, "
+            + $"750 ms={profile.selectedHorizon750Seconds:0.0} s, "
+            + $"1000 ms={profile.selectedHorizon1000Seconds:0.0} s.";
         return true;
     }
 
     public bool TryValidateStaticConfiguration(out string message)
     {
         ResolveReferences();
-        if (sceneBuilder == null || locomotion == null || logger == null)
+        if (sceneBuilder == null || locomotion == null)
         {
-            message = "Scene builder, locomotion, or objective logger reference is missing.";
+            message = "Scene builder or locomotion reference is missing.";
             return false;
         }
-        if (fixedMaxTranslationHorizonSeconds < fixedMinTranslationHorizonSeconds
-            || fixedMaxYawHorizonSeconds < fixedMinYawHorizonSeconds)
-        {
-            message = "Fixed prediction-window maxima must be at least their minima.";
-            return false;
-        }
-        if (!Mathf.Approximately(
-                fixedMinTranslationHorizonSeconds,
-                Experiment1MinTranslationHorizonSeconds)
-            || !Mathf.Approximately(
-                fixedMaxTranslationHorizonSeconds,
-                Experiment1MaxTranslationHorizonSeconds)
-            || !Mathf.Approximately(fixedMinYawHorizonSeconds, Experiment1MinYawHorizonSeconds)
-            || !Mathf.Approximately(fixedMaxYawHorizonSeconds, Experiment1MaxYawHorizonSeconds)
-            || fixedPredictionMethod
-                != PredictiveGhostAvatarLocomotion.PredictionMethod.AccelerationJerkLimited)
-        {
-            message = "Experiment 2 Fixed must reproduce the Experiment 1 profile: "
-                + "translation 0.08-0.45 s, yaw 0.05-0.20 s, AccelerationJerkLimited.";
-            return false;
-        }
-        if (maximumSelectableHorizonSeconds <= minimumSelectableHorizonSeconds)
-        {
-            message = "Maximum selectable horizon must exceed the minimum.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(objectiveOutputDirectory)
-            || string.IsNullOrWhiteSpace(calibrationOutputDirectory))
-        {
-            message = "Experiment 2 output directories must not be empty.";
-            return false;
-        }
-
-        message = "Ready";
-        return true;
-    }
-
-    bool TryValidateCommonSetup(bool requireLoggerSetup, out string message)
-    {
         if (string.IsNullOrWhiteSpace(participantId))
         {
             message = "Participant ID is empty.";
@@ -970,17 +724,42 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         }
         if (!TryResolveParticipantSequenceNumber(out _))
         {
-            message = "Participant ID must end with a positive number, for example E2P001.";
+            message = "Participant ID must end with a positive number, for example P001.";
             return false;
         }
-        if (!TryValidateStaticConfiguration(out message))
+        if (maximumSelectableHorizonSeconds <= minimumSelectableHorizonSeconds)
         {
+            message = "Maximum selectable horizon must exceed the minimum.";
             return false;
         }
-
-        logger.participantId = participantId.Trim();
-        if (requireLoggerSetup && !logger.TryValidateSetup(out message))
+        if (referenceMaxTranslationHorizonSeconds < referenceMinTranslationHorizonSeconds
+            || referenceMaxYawHorizonSeconds < referenceMinYawHorizonSeconds)
         {
+            message = "Personalized profile reference maxima must be at least their minima.";
+            return false;
+        }
+        if (!Mathf.Approximately(
+                referenceMinTranslationHorizonSeconds,
+                Experiment1MinTranslationHorizonSeconds)
+            || !Mathf.Approximately(
+                referenceMaxTranslationHorizonSeconds,
+                Experiment1MaxTranslationHorizonSeconds)
+            || !Mathf.Approximately(
+                referenceMinYawHorizonSeconds,
+                Experiment1MinYawHorizonSeconds)
+            || !Mathf.Approximately(
+                referenceMaxYawHorizonSeconds,
+                Experiment1MaxYawHorizonSeconds)
+            || predictionMethod
+                != PredictiveGhostAvatarLocomotion.PredictionMethod.AccelerationJerkLimited)
+        {
+            message = "Experiment 2 calibration must use the Experiment 1 profile shape: "
+                + "translation 0.08-0.45 s, yaw 0.05-0.20 s, AccelerationJerkLimited.";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(calibrationOutputDirectory))
+        {
+            message = "Calibration output directory is empty.";
             return false;
         }
 
@@ -994,7 +773,6 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         {
             return;
         }
-
         if (sceneBuilder == null)
         {
             sceneBuilder = GetComponent<IrairaBou3DOfficialSceneBuilder>();
@@ -1003,11 +781,9 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         {
             sceneBuilder = FindFirstObjectByType<IrairaBou3DOfficialSceneBuilder>();
         }
-        if (logger == null)
+        if (experiment3Controller == null)
         {
-            logger = sceneBuilder != null
-                ? sceneBuilder.GetComponent<PredictiveFlyObjectiveLogger>()
-                : FindFirstObjectByType<PredictiveFlyObjectiveLogger>();
+            experiment3Controller = GetComponent<PredictiveFlyExperiment3Controller>();
         }
         if (locomotion == null || !locomotion.gameObject.scene.IsValid())
         {
@@ -1018,98 +794,79 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
     void ConfigureExperimentComponents()
     {
         EnsureExperiment1ControllerDisabled();
-        if (logger != null)
+        if (locomotion == null)
         {
-            logger.enabled = true;
-            logger.useKeyboardControls = false;
-            logger.stopOnFinish = true;
-            logger.stopOnModeChange = true;
-            logger.saveIncompleteTrials = true;
-            logger.incompleteTrialSubdirectory = "Incomplete";
-            logger.outputDirectory = objectiveOutputDirectory;
-            logger.participantId = string.IsNullOrWhiteSpace(participantId) ? "E2P001" : participantId.Trim();
+            return;
         }
-        if (locomotion != null)
+        locomotion.allowRuntimeVisualizationHotkeys = false;
+        locomotion.allowRuntimePredictionHotkey = false;
+        if (!IsCalibrationActive)
         {
-            locomotion.allowRuntimeVisualizationHotkeys = false;
-            locomotion.allowRuntimePredictionHotkey = false;
-            if (state != Experiment2State.Calibrating && state != Experiment2State.RunningTrial)
-            {
-                locomotion.SetLocomotionInputEnabled(false);
-            }
+            locomotion.SetLocomotionInputEnabled(false);
         }
     }
 
     void EnsureExperiment1ControllerDisabled()
     {
-        PredictiveFlyExperimentController experiment1 = GetComponent<PredictiveFlyExperimentController>();
+        PredictiveFlyExperimentController experiment1 =
+            GetComponent<PredictiveFlyExperimentController>();
         if (experiment1 != null && experiment1.enabled)
         {
             experiment1.enabled = false;
         }
     }
 
-    bool TryResolveParticipantSequenceNumber(out int sequenceNumber)
+    void ConfigureLocomotionForDelay(int delayMilliseconds)
     {
-        sequenceNumber = 0;
-        string value = participantId != null ? participantId.Trim() : string.Empty;
-        int start = value.Length;
-        while (start > 0 && char.IsDigit(value[start - 1]))
-        {
-            start--;
-        }
-
-        string digits = value.Substring(start);
-        return int.TryParse(digits, NumberStyles.Integer, CultureInfo.InvariantCulture, out sequenceNumber)
-            && sequenceNumber > 0;
+        locomotion.allowRuntimeVisualizationHotkeys = false;
+        locomotion.allowRuntimePredictionHotkey = false;
+        locomotion.enableInputToRigDelay = true;
+        locomotion.inputToRigDelayMilliseconds = Mathf.Max(0, delayMilliseconds);
+        locomotion.useCollisionConsistentStateDelay = true;
+        locomotion.SetPredictionMethod(predictionMethod);
     }
 
-    public static bool TryGetTrialAssignment(
-        int participantSequence,
-        int requestedTrialIndex,
-        out TrialAssignment assignment)
+    void ApplyCurrentPredictionProfile()
     {
-        assignment = default;
-        if (participantSequence < 1 || requestedTrialIndex < 1 || requestedTrialIndex > 6)
+        if (locomotion == null)
         {
-            return false;
+            return;
         }
-
-        int block = (requestedTrialIndex - 1) / 3;
-        int positionWithinBlock = (requestedTrialIndex - 1) % 3;
-        int firstDelay = GetFirstDelayMilliseconds(participantSequence);
-        int delay = block == 0 ? firstDelay : OtherDelay(firstDelay);
-        int permutationRow = (participantSequence - 1) % 6;
-        if (delay == 1000)
-        {
-            permutationRow = (permutationRow + 2) % 6;
-        }
-
-        ProxyStrategy strategy = (ProxyStrategy)StrategyPermutations[permutationRow, positionWithinBlock];
-        int canonicalConditionCode = (delay == 500 ? 0 : 3) + (int)strategy;
-        int routeCode = (participantSequence - 1 + canonicalConditionCode) % 4;
-        assignment = new TrialAssignment
-        {
-            participantSequence = participantSequence,
-            trialIndex = requestedTrialIndex,
-            delayMilliseconds = delay,
-            strategy = strategy,
-            route = (IrairaBou3DOfficialSceneBuilder.CourseRouteVariant)routeCode,
-            canonicalConditionCode = canonicalConditionCode,
-            conditionLabel = $"D{delay}_{strategy}"
-        };
-        return true;
+        locomotion.minTranslationPredictionWindow = 0f;
+        locomotion.maxTranslationPredictionWindow = 0f;
+        locomotion.minYawPredictionWindow = 0f;
+        locomotion.maxYawPredictionWindow = 0f;
     }
 
-    public static int GetFirstDelayMilliseconds(int participantSequence)
+    void ApplyPersonalizedPredictionProfile(float selectedMaxTranslationHorizon)
     {
-        return (Mathf.Max(1, participantSequence) - 1) % 2 == 0 ? 500 : 1000;
+        if (locomotion == null)
+        {
+            return;
+        }
+        float selected = Mathf.Clamp(
+            selectedMaxTranslationHorizon,
+            minimumSelectableHorizonSeconds,
+            maximumSelectableHorizonSeconds);
+        float scale = referenceMaxTranslationHorizonSeconds > 1e-5f
+            ? selected / referenceMaxTranslationHorizonSeconds
+            : 0f;
+        locomotion.minTranslationPredictionWindow =
+            referenceMinTranslationHorizonSeconds * scale;
+        locomotion.maxTranslationPredictionWindow = selected;
+        locomotion.minYawPredictionWindow = referenceMinYawHorizonSeconds * scale;
+        locomotion.maxYawPredictionWindow = referenceMaxYawHorizonSeconds * scale;
     }
 
-    public static int GetDelayForOrderPosition(int participantSequence, int delayOrderIndex)
+    void UpdateCalibrationProxyAppearance()
     {
-        int first = GetFirstDelayMilliseconds(participantSequence);
-        return Mathf.Clamp(delayOrderIndex, 0, 1) == 0 ? first : OtherDelay(first);
+        if (locomotion == null)
+        {
+            return;
+        }
+        bool hideCoincidentProxy = activeDelayMilliseconds == 0
+            && currentHorizonSeconds <= 1e-5f;
+        locomotion.SetStateGhostAppearanceSuppressed(hideCoincidentProxy);
     }
 
     public static string GetCalibrationAnchor(
@@ -1121,9 +878,10 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         {
             return "Mid";
         }
-
-        int delayMilliseconds = GetDelayForOrderPosition(participantSequence, delayOrderIndex);
-        int delayOffset = delayMilliseconds == 1000 ? 1 : 0;
+        int delayMilliseconds = GetCalibrationDelayForOrderPosition(
+            participantSequence,
+            delayOrderIndex);
+        int delayOffset = GetCalibrationDelayLevelIndex(delayMilliseconds);
         bool lowFirst = ((Mathf.Max(1, participantSequence) - 1 + delayOffset) % 2) == 0;
         if (runIndexForDelay == 0)
         {
@@ -1158,123 +916,17 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             sorted.Sort();
             selected = sorted[sorted.Count / 2];
         }
-
         return RoundHorizon(selected, minimum, maximum, step);
     }
 
-    static int OtherDelay(int delayMilliseconds)
+    static float RoundHorizon(float value, float minimum, float maximum, float step)
     {
-        return delayMilliseconds == 500 ? 1000 : 500;
-    }
-
-    string GetConditionOrderString(int sequenceNumber)
-    {
-        StringBuilder builder = new StringBuilder(96);
-        for (int i = 1; i <= 6; i++)
-        {
-            TryGetTrialAssignment(sequenceNumber, i, out TrialAssignment assignment);
-            if (i > 1)
-            {
-                builder.Append('>');
-            }
-            builder.Append(assignment.conditionLabel);
-        }
-        return builder.ToString();
-    }
-
-    string GetRouteOrderString(int sequenceNumber)
-    {
-        char[] routes = new char[6];
-        for (int i = 1; i <= 6; i++)
-        {
-            TryGetTrialAssignment(sequenceNumber, i, out TrialAssignment assignment);
-            routes[i - 1] = RouteCode(assignment.route);
-        }
-        return new string(routes);
-    }
-
-    static char RouteCode(IrairaBou3DOfficialSceneBuilder.CourseRouteVariant route)
-    {
-        return (char)('A' + (int)route);
-    }
-
-    static string GetTrialKey(string participant, int index)
-    {
-        return $"{participant?.Trim()}|{Mathf.Clamp(index, 1, 6)}";
-    }
-
-    string GetConditionLabel(TrialAssignment assignment)
-    {
-        switch (assignment.strategy)
-        {
-            case ProxyStrategy.Current:
-                return $"E2_D{assignment.delayMilliseconds}_Current";
-            case ProxyStrategy.Fixed:
-                return $"E2_D{assignment.delayMilliseconds}_Fixed";
-            default:
-                return $"E2_D{assignment.delayMilliseconds}_Personalized_H{HorizonToken(GetSelectedHorizon(assignment.delayMilliseconds))}";
-        }
-    }
-
-    string BuildExperimentConfigId(TrialAssignment assignment)
-    {
-        float selected = assignment.strategy == ProxyStrategy.Personalized
-            ? GetSelectedHorizon(assignment.delayMilliseconds)
-            : assignment.strategy == ProxyStrategy.Fixed
-                ? fixedMaxTranslationHorizonSeconds
-                : 0f;
-        return string.Join(
-            "|",
-            "Study2",
-            $"delay_ms={assignment.delayMilliseconds}",
-            $"strategy={assignment.strategy}",
-            $"selected_max_translation_horizon_s={selected.ToString("0.000", CultureInfo.InvariantCulture)}",
-            $"fixed_translation_profile_s={fixedMinTranslationHorizonSeconds.ToString("0.000", CultureInfo.InvariantCulture)}-{fixedMaxTranslationHorizonSeconds.ToString("0.000", CultureInfo.InvariantCulture)}",
-            $"fixed_yaw_profile_s={fixedMinYawHorizonSeconds.ToString("0.000", CultureInfo.InvariantCulture)}-{fixedMaxYawHorizonSeconds.ToString("0.000", CultureInfo.InvariantCulture)}",
-            $"calibrated_h500_s={selectedHorizon500Seconds.ToString("0.000", CultureInfo.InvariantCulture)}",
-            $"calibrated_h1000_s={selectedHorizon1000Seconds.ToString("0.000", CultureInfo.InvariantCulture)}");
-    }
-
-    string BuildTrialEventNote(TrialAssignment assignment)
-    {
-        return $"trial_index={activeTrialIndex};delay_ms={assignment.delayMilliseconds};strategy={assignment.strategy};" +
-            $"max_translation_horizon_s={activeMaximumTranslationHorizonSeconds.ToString("0.000", CultureInfo.InvariantCulture)};" +
-            $"condition_order={activeConditionOrder};route={activeRouteId};route_order={activeRouteOrder};" +
-            $"h500={selectedHorizon500Seconds.ToString("0.000", CultureInfo.InvariantCulture)};" +
-            $"h1000={selectedHorizon1000Seconds.ToString("0.000", CultureInfo.InvariantCulture)}";
-    }
-
-    static string HorizonToken(float horizon)
-    {
-        return Mathf.Max(0f, horizon)
-            .ToString("0.000", CultureInfo.InvariantCulture)
-            .Replace('.', 'p');
-    }
-
-    float GetSelectedHorizon(int delayMilliseconds)
-    {
-        return delayMilliseconds == 500
-            ? selectedHorizon500Seconds
-            : selectedHorizon1000Seconds;
-    }
-
-    void SetSelectedHorizon(int delayMilliseconds, float value)
-    {
-        if (delayMilliseconds == 500)
-        {
-            selectedHorizon500Seconds = value;
-        }
-        else
-        {
-            selectedHorizon1000Seconds = value;
-        }
-    }
-
-    List<float> GetCalibrationSelections(int delayMilliseconds)
-    {
-        return delayMilliseconds == 500
-            ? calibrationSelections500
-            : calibrationSelections1000;
+        float safeMin = Mathf.Min(minimum, maximum);
+        float safeMax = Mathf.Max(minimum, maximum);
+        float safeStep = Mathf.Max(0.0001f, step);
+        float clamped = Mathf.Clamp(value, safeMin, safeMax);
+        float steps = Mathf.Round((clamped - safeMin) / safeStep);
+        return Mathf.Clamp(safeMin + steps * safeStep, safeMin, safeMax);
     }
 
     float GetAnchorHorizon(string anchor)
@@ -1294,66 +946,206 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             horizonStepSeconds);
     }
 
-    static float RoundHorizon(float value, float minimum, float maximum, float step)
+    List<float> GetSelections(int delayMilliseconds)
     {
-        float safeMin = Mathf.Min(minimum, maximum);
-        float safeMax = Mathf.Max(minimum, maximum);
-        float safeStep = Mathf.Max(0.0001f, step);
-        float clamped = Mathf.Clamp(value, safeMin, safeMax);
-        float steps = Mathf.Round((clamped - safeMin) / safeStep);
-        return Mathf.Clamp(safeMin + steps * safeStep, safeMin, safeMax);
+        switch (delayMilliseconds)
+        {
+            case 0:
+                return selections0;
+            case 250:
+                return selections250;
+            case 500:
+                return selections500;
+            case 750:
+                return selections750;
+            case 1000:
+                return selections1000;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(delayMilliseconds),
+                    delayMilliseconds,
+                    "Unsupported Experiment 2 delay.");
+        }
     }
 
-    float ClampOptionalHorizon(float value)
+    void SetSelectedHorizon(int delayMilliseconds, float value)
     {
-        return value < 0f
-            ? -1f
-            : RoundHorizon(
-                value,
-                minimumSelectableHorizonSeconds,
-                maximumSelectableHorizonSeconds,
-                horizonStepSeconds);
+        switch (delayMilliseconds)
+        {
+            case 0:
+                selectedHorizon0Seconds = value;
+                break;
+            case 250:
+                selectedHorizon250Seconds = value;
+                break;
+            case 500:
+                selectedHorizon500Seconds = value;
+                break;
+            case 750:
+                selectedHorizon750Seconds = value;
+                break;
+            case 1000:
+                selectedHorizon1000Seconds = value;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(delayMilliseconds),
+                    delayMilliseconds,
+                    "Unsupported Experiment 2 delay.");
+        }
+    }
+
+    public static int GetCalibrationDelayForOrderPosition(
+        int participantSequence,
+        int delayOrderIndex)
+    {
+        int rowCount = CalibrationDelayOrders.GetLength(0);
+        int row = (Mathf.Max(1, participantSequence) - 1) % rowCount;
+        int position = Mathf.Clamp(delayOrderIndex, 0, CalibrationDelayCount - 1);
+        return CalibrationDelayLevelsMilliseconds[CalibrationDelayOrders[row, position]];
+    }
+
+    public static int GetCalibrationDelayLevelMilliseconds(int delayIndex)
+    {
+        return CalibrationDelayLevelsMilliseconds[
+            Mathf.Clamp(delayIndex, 0, CalibrationDelayCount - 1)];
+    }
+
+    public static int GetCalibrationDelayLevelIndex(int delayMilliseconds)
+    {
+        for (int i = 0; i < CalibrationDelayLevelsMilliseconds.Length; i++)
+        {
+            if (CalibrationDelayLevelsMilliseconds[i] == delayMilliseconds)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    bool TryResolveParticipantSequenceNumber(out int sequenceNumber)
+    {
+        sequenceNumber = 0;
+        string value = participantId != null ? participantId.Trim() : string.Empty;
+        int start = value.Length;
+        while (start > 0 && char.IsDigit(value[start - 1]))
+        {
+            start--;
+        }
+        string digits = value.Substring(start);
+        return int.TryParse(
+                digits,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out sequenceNumber)
+            && sequenceNumber > 0;
     }
 
     string GetDelayOrderString(int sequenceNumber)
     {
-        int first = GetFirstDelayMilliseconds(sequenceNumber);
-        return $"{first}>{OtherDelay(first)}";
-    }
-
-    void UpdateScheduledAssignmentPreview()
-    {
-        if (!TryResolveParticipantSequenceNumber(out int sequenceNumber)
-            || !TryGetTrialAssignment(sequenceNumber, trialIndex, out TrialAssignment assignment))
+        StringBuilder builder = new StringBuilder(20);
+        for (int i = 0; i < CalibrationDelayCount; i++)
         {
-            scheduledAssignmentPreview = "Invalid participant ID or trial index";
-            delayOrderPreview = "Invalid participant ID";
-            return;
+            if (i > 0)
+            {
+                builder.Append('>');
+            }
+            builder.Append(GetCalibrationDelayForOrderPosition(
+                sequenceNumber,
+                i));
         }
-
-        float horizon = assignment.strategy == ProxyStrategy.Current
-            ? 0f
-            : assignment.strategy == ProxyStrategy.Fixed
-                ? fixedMaxTranslationHorizonSeconds
-                : GetSelectedHorizon(assignment.delayMilliseconds);
-        string horizonText = horizon < 0f ? "calibration required" : $"Hmax={horizon:0.0} s";
-        scheduledAssignmentPreview =
-            $"Trial {trialIndex}: {assignment.conditionLabel}, Route_{RouteCode(assignment.route)}, {horizonText}";
-        delayOrderPreview = GetDelayOrderString(sequenceNumber);
+        return builder.ToString();
     }
 
-    bool IsRunActive()
+    void UpdateDelayOrderPreview()
     {
-        return state == Experiment2State.PreparingCalibration
-            || state == Experiment2State.Calibrating
-            || state == Experiment2State.PreparingTrial
-            || state == Experiment2State.RunningTrial;
+        delayOrderPreview = TryResolveParticipantSequenceNumber(out int sequenceNumber)
+            ? GetDelayOrderString(sequenceNumber)
+            : "Invalid participant ID";
     }
 
     string BuildCalibrationStatus(string prefix)
     {
-        return $"{prefix} {activeCalibrationDelayMilliseconds} ms calibration run {activeCalibrationRunNumber} " +
-            $"({activeCalibrationAnchor}); horizon={currentCalibrationHorizonSeconds:0.0} s. Use [ / ] and Space.";
+        return $"{prefix} {activeDelayMilliseconds} ms calibration run {activeRunNumber} "
+            + $"({activeAnchor}), Hmax={currentHorizonSeconds:0.0} s. "
+            + $"Use [{decreaseHorizonKey}] / [{increaseHorizonKey}], then [{acceptCalibrationKey}].";
+    }
+
+    void ResetRunMetrics()
+    {
+        metricsLastSampleAt = Time.unscaledTime;
+        metricDuration = 0f;
+        latestSpeed = 0f;
+        speedIntegral = 0f;
+        maxSpeed = 0f;
+        delayedToRealTimeIntegral = 0f;
+        maxDelayedToRealTime = 0f;
+        realTimeToProxyIntegral = 0f;
+        maxRealTimeToProxy = 0f;
+        delayedToProxyIntegral = 0f;
+        maxDelayedToProxy = 0f;
+        latestDelayedToRealTime = float.NaN;
+        latestRealTimeToProxy = float.NaN;
+        latestDelayedToProxy = float.NaN;
+        hasLastRealTimePosition = locomotion != null;
+        lastRealTimePosition = locomotion != null
+            ? locomotion.RealTimeDronePosition
+            : Vector3.zero;
+        UpdateSeparationSnapshot();
+    }
+
+    void UpdateRunMetrics()
+    {
+        if (locomotion == null)
+        {
+            return;
+        }
+        float now = Time.unscaledTime;
+        float dt = Mathf.Max(0f, now - metricsLastSampleAt);
+        Vector3 currentPosition = locomotion.RealTimeDronePosition;
+        float speed = hasLastRealTimePosition && dt > 1e-5f
+            ? Vector3.Distance(lastRealTimePosition, currentPosition) / dt
+            : 0f;
+        UpdateSeparationSnapshot();
+        if (dt > 0f)
+        {
+            metricDuration += dt;
+            speedIntegral += speed * dt;
+            delayedToRealTimeIntegral += latestDelayedToRealTime * dt;
+            realTimeToProxyIntegral += latestRealTimeToProxy * dt;
+            delayedToProxyIntegral += latestDelayedToProxy * dt;
+        }
+        latestSpeed = speed;
+        maxSpeed = Mathf.Max(maxSpeed, speed);
+        maxDelayedToRealTime = Mathf.Max(maxDelayedToRealTime, latestDelayedToRealTime);
+        maxRealTimeToProxy = Mathf.Max(maxRealTimeToProxy, latestRealTimeToProxy);
+        maxDelayedToProxy = Mathf.Max(maxDelayedToProxy, latestDelayedToProxy);
+        metricsLastSampleAt = now;
+        lastRealTimePosition = currentPosition;
+        hasLastRealTimePosition = true;
+    }
+
+    void UpdateSeparationSnapshot()
+    {
+        if (locomotion == null)
+        {
+            return;
+        }
+        Vector3 realTime = locomotion.RealTimeDronePosition;
+        Vector3 delayed = locomotion.droneBodyAvatar != null
+            ? locomotion.droneBodyAvatar.position
+            : realTime;
+        Vector3 proxy = locomotion.stateGhostAvatar != null
+            ? locomotion.stateGhostAvatar.position
+            : locomotion.GhostPosition;
+        latestDelayedToRealTime = Vector3.Distance(delayed, realTime);
+        latestRealTimeToProxy = Vector3.Distance(realTime, proxy);
+        latestDelayedToProxy = Vector3.Distance(delayed, proxy);
+    }
+
+    float RunMean(float integral)
+    {
+        return metricDuration > 1e-5f ? integral / metricDuration : float.NaN;
     }
 
     void AddCalibrationEvent(
@@ -1365,20 +1157,43 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         float horizonSeconds,
         string note)
     {
+        UpdateSeparationSnapshot();
         calibrationEvents.Add(new CalibrationEventRecord
         {
+            protocolVersion = ProtocolVersion,
             timestamp = DateTime.Now.ToString("o", CultureInfo.InvariantCulture),
             eventType = eventType,
             participantId = string.IsNullOrWhiteSpace(calibratedParticipantId)
                 ? participantId?.Trim()
                 : calibratedParticipantId.Trim(),
-            participantSequence = calibrationParticipantSequence,
+            participantSequence = participantSequence,
             delayMilliseconds = delayMilliseconds,
             runNumber = runNumber,
             anchor = anchor,
             elapsedSeconds = elapsedSeconds,
             horizonSeconds = horizonSeconds,
+            effectiveTranslationHorizonSeconds = locomotion != null
+                ? locomotion.CurrentTranslationPredictionWindow
+                : float.NaN,
+            predictionConfidence = locomotion != null
+                ? locomotion.CurrentTranslationPredictionConfidence
+                : float.NaN,
+            instantaneousSpeedMps = latestSpeed,
+            delayedToRealTimeDistanceM = latestDelayedToRealTime,
+            realTimeToProxyDistanceM = latestRealTimeToProxy,
+            delayedToProxyDistanceM = latestDelayedToProxy,
+            runMeanSpeedMps = RunMean(speedIntegral),
+            runMaxSpeedMps = maxSpeed,
+            runMeanDelayedToRealTimeDistanceM = RunMean(delayedToRealTimeIntegral),
+            runMaxDelayedToRealTimeDistanceM = maxDelayedToRealTime,
+            runMeanRealTimeToProxyDistanceM = RunMean(realTimeToProxyIntegral),
+            runMaxRealTimeToProxyDistanceM = maxRealTimeToProxy,
+            runMeanDelayedToProxyDistanceM = RunMean(delayedToProxyIntegral),
+            runMaxDelayedToProxyDistanceM = maxDelayedToProxy,
+            selectedHorizon0Seconds = selectedHorizon0Seconds,
+            selectedHorizon250Seconds = selectedHorizon250Seconds,
             selectedHorizon500Seconds = selectedHorizon500Seconds,
+            selectedHorizon750Seconds = selectedHorizon750Seconds,
             selectedHorizon1000Seconds = selectedHorizon1000Seconds,
             note = note
         });
@@ -1391,17 +1206,27 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         {
             return;
         }
-
         StringBuilder csv = new StringBuilder(4096);
-        csv.AppendLine("timestamp,event_type,participant_id,participant_sequence,delay_ms,run_number,start_anchor,elapsed_s,horizon_s,selected_horizon_500_s,selected_horizon_1000_s,note");
+        csv.AppendLine(
+            "protocol_version,timestamp,event_type,participant_id,participant_sequence,delay_ms,"
+            + "run_number,start_anchor,elapsed_s,horizon_s,effective_translation_horizon_s,"
+            + "prediction_confidence,instantaneous_speed_mps,delayed_to_realtime_distance_m,"
+            + "realtime_to_proxy_distance_m,delayed_to_proxy_distance_m,run_mean_speed_mps,"
+            + "run_max_speed_mps,run_mean_delayed_to_realtime_distance_m,"
+            + "run_max_delayed_to_realtime_distance_m,run_mean_realtime_to_proxy_distance_m,"
+            + "run_max_realtime_to_proxy_distance_m,run_mean_delayed_to_proxy_distance_m,"
+            + "run_max_delayed_to_proxy_distance_m,selected_horizon_0_s,"
+            + "selected_horizon_250_s,selected_horizon_500_s,selected_horizon_750_s,"
+            + "selected_horizon_1000_s,note");
         for (int i = 0; i < calibrationEvents.Count; i++)
         {
             CalibrationEventRecord item = calibrationEvents[i];
+            AppendCsv(csv, item.protocolVersion);
             AppendCsv(csv, item.timestamp);
             AppendCsv(csv, item.eventType);
             AppendCsv(csv, item.participantId);
             AppendCsv(csv, item.participantSequence.ToString(CultureInfo.InvariantCulture));
-            AppendCsv(csv, item.delayMilliseconds > 0
+            AppendCsv(csv, item.delayMilliseconds >= 0
                 ? item.delayMilliseconds.ToString(CultureInfo.InvariantCulture)
                 : string.Empty);
             AppendCsv(csv, item.runNumber > 0
@@ -1412,12 +1237,25 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             AppendCsv(csv, float.IsNaN(item.horizonSeconds)
                 ? string.Empty
                 : item.horizonSeconds.ToString("0.000", CultureInfo.InvariantCulture));
-            AppendCsv(csv, item.selectedHorizon500Seconds < 0f
-                ? string.Empty
-                : item.selectedHorizon500Seconds.ToString("0.000", CultureInfo.InvariantCulture));
-            AppendCsv(csv, item.selectedHorizon1000Seconds < 0f
-                ? string.Empty
-                : item.selectedHorizon1000Seconds.ToString("0.000", CultureInfo.InvariantCulture));
+            AppendCsvFloat(csv, item.effectiveTranslationHorizonSeconds);
+            AppendCsvFloat(csv, item.predictionConfidence);
+            AppendCsvFloat(csv, item.instantaneousSpeedMps);
+            AppendCsvFloat(csv, item.delayedToRealTimeDistanceM);
+            AppendCsvFloat(csv, item.realTimeToProxyDistanceM);
+            AppendCsvFloat(csv, item.delayedToProxyDistanceM);
+            AppendCsvFloat(csv, item.runMeanSpeedMps);
+            AppendCsvFloat(csv, item.runMaxSpeedMps);
+            AppendCsvFloat(csv, item.runMeanDelayedToRealTimeDistanceM);
+            AppendCsvFloat(csv, item.runMaxDelayedToRealTimeDistanceM);
+            AppendCsvFloat(csv, item.runMeanRealTimeToProxyDistanceM);
+            AppendCsvFloat(csv, item.runMaxRealTimeToProxyDistanceM);
+            AppendCsvFloat(csv, item.runMeanDelayedToProxyDistanceM);
+            AppendCsvFloat(csv, item.runMaxDelayedToProxyDistanceM);
+            AppendCsvOptionalHorizon(csv, item.selectedHorizon0Seconds);
+            AppendCsvOptionalHorizon(csv, item.selectedHorizon250Seconds);
+            AppendCsvOptionalHorizon(csv, item.selectedHorizon500Seconds);
+            AppendCsvOptionalHorizon(csv, item.selectedHorizon750Seconds);
+            AppendCsvOptionalHorizon(csv, item.selectedHorizon1000Seconds);
             AppendCsv(csv, item.note, true);
         }
 
@@ -1434,14 +1272,32 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
             {
                 File.Move(stagingPath, calibrationCsvPath);
             }
-            lastCalibrationSaveError = string.Empty;
+            lastSaveError = string.Empty;
         }
         catch (Exception exception)
         {
-            lastCalibrationSaveError = exception.Message;
+            lastSaveError = exception.Message;
             TryDeleteFile(stagingPath);
-            Debug.LogError($"[PredictiveFlyExperiment2Controller] Calibration CSV could not be saved: {exception}", this);
+            Debug.LogError(
+                $"[PredictiveFlyExperiment2Controller] Experiment 2 CSV could not be saved: {exception}",
+                this);
         }
+    }
+
+    static void AppendCsvOptionalHorizon(StringBuilder builder, float value)
+    {
+        AppendCsv(builder, value < 0f
+            ? string.Empty
+            : value.ToString("0.000", CultureInfo.InvariantCulture));
+    }
+
+    static void AppendCsvFloat(StringBuilder builder, float value)
+    {
+        AppendCsv(
+            builder,
+            float.IsNaN(value) || float.IsInfinity(value)
+                ? string.Empty
+                : value.ToString("0.000", CultureInfo.InvariantCulture));
     }
 
     static void AppendCsv(StringBuilder builder, string value, bool endRow = false)
@@ -1461,36 +1317,9 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         builder.Append(endRow ? '\n' : ',');
     }
 
-    string ResolveDirectory(string configured, string fallback)
+    static bool IsKeyDown(KeyCode key)
     {
-        string directory = string.IsNullOrWhiteSpace(configured) ? fallback : configured.Trim();
-        if (Path.IsPathRooted(directory))
-        {
-            return Path.GetFullPath(directory);
-        }
-
-#if UNITY_EDITOR
-        return Path.GetFullPath(Path.Combine(Application.dataPath, "..", directory));
-#else
-        return Path.Combine(Application.persistentDataPath, directory);
-#endif
-    }
-
-    static string Sanitize(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "NA";
-        }
-
-        StringBuilder builder = new StringBuilder(value.Length);
-        char[] invalid = Path.GetInvalidFileNameChars();
-        for (int i = 0; i < value.Length; i++)
-        {
-            char c = value[i];
-            builder.Append(Array.IndexOf(invalid, c) >= 0 || char.IsWhiteSpace(c) ? '_' : c);
-        }
-        return builder.ToString();
+        return key != KeyCode.None && Input.GetKeyDown(key);
     }
 
     static void TryDeleteFile(string path)
@@ -1511,7 +1340,7 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
     void FailPreparation(string message)
     {
         locomotion?.SetLocomotionInputEnabled(false);
-        state = Experiment2State.Error;
+        state = CalibrationState.Error;
         status = message;
         preparationRoutine = null;
         Debug.LogError($"[PredictiveFlyExperiment2Controller] {message}", this);
@@ -1525,13 +1354,15 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
 
     void SetError(string message)
     {
-        state = Experiment2State.Error;
+        locomotion?.SetLocomotionInputEnabled(false);
+        state = CalibrationState.Error;
         status = message;
         Debug.LogError($"[PredictiveFlyExperiment2Controller] {message}", this);
     }
 
     struct CalibrationEventRecord
     {
+        public string protocolVersion;
         public string timestamp;
         public string eventType;
         public string participantId;
@@ -1541,7 +1372,24 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         public string anchor;
         public float elapsedSeconds;
         public float horizonSeconds;
+        public float effectiveTranslationHorizonSeconds;
+        public float predictionConfidence;
+        public float instantaneousSpeedMps;
+        public float delayedToRealTimeDistanceM;
+        public float realTimeToProxyDistanceM;
+        public float delayedToProxyDistanceM;
+        public float runMeanSpeedMps;
+        public float runMaxSpeedMps;
+        public float runMeanDelayedToRealTimeDistanceM;
+        public float runMaxDelayedToRealTimeDistanceM;
+        public float runMeanRealTimeToProxyDistanceM;
+        public float runMaxRealTimeToProxyDistanceM;
+        public float runMeanDelayedToProxyDistanceM;
+        public float runMaxDelayedToProxyDistanceM;
+        public float selectedHorizon0Seconds;
+        public float selectedHorizon250Seconds;
         public float selectedHorizon500Seconds;
+        public float selectedHorizon750Seconds;
         public float selectedHorizon1000Seconds;
         public string note;
     }
