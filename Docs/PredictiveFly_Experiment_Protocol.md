@@ -26,10 +26,13 @@ Routes use the same four balanced orders in independent four-participant blocks.
 
 On `IrairaBou3D Official Scene Builder > PredictiveFlyExperimentController`:
 
-1. Set `participantId`.
-2. Set `trialIndex` to 1, 2, 3, or 4.
-3. Ask the participant to stand in a neutral posture with the left body-anchor controller tracked.
-4. Press Enter once. The controller assigns the condition and route, rebuilds the route when needed, normalizes the course material state, freezes input, recenters, fills the delay buffer, validates body tracking, starts in-memory objective-data buffering, and enables input.
+1. Enable only `PredictiveFlyExperimentController`; disable the Experiment 2 and Experiment 3 controllers.
+2. Set `participantId`.
+3. Set `trialIndex` to 1, 2, 3, or 4.
+4. Ask the participant to stand in a neutral posture with the left body-anchor controller tracked.
+5. Press Enter once. The controller assigns the condition and route, rebuilds the route when needed, normalizes the course material state, freezes input, recenters, fills the delay buffer, validates body tracking, starts in-memory objective-data buffering, and enables input.
+
+Controller interlocks are intentionally disabled. Experiment 1 and Experiment 3 both use Enter, so they must not be enabled together. Do not switch experiment controllers during an active run.
 
 Press Escape to abort. Reaching the course finish writes all four CSV files and then locks locomotion so the participant can rest. Change only `trialIndex`, then press Enter when ready for the next trial. A completed participant/trial pair cannot be repeated accidentally during the same Play Mode session.
 
@@ -39,7 +42,7 @@ If a trial is aborted, its buffered data is discarded and no CSV files are creat
 
 A trial is invalid when any of the following occurs:
 
-- Body-anchor tracking is unavailable longer than the configured grace period.
+- Body-anchor tracking is unavailable for 5 seconds or longer.
 - The condition changes after logging starts.
 - The logger stops before finish.
 - The participant or experimenter aborts.
@@ -86,6 +89,6 @@ Treat collisions and near misses as secondary safety outcomes. Correct secondary
 - Verify checkpoint count and route progress increase monotonically.
 - Deliberately touch a wall and an avoidance obstacle; confirm collision events.
 - Deliberately approach and turn away; confirm exactly one first avoidance-onset event.
-- Disconnect the body anchor; confirm automatic abort after the grace period and confirm that no files are created.
+- Disconnect the body anchor; confirm automatic abort after the 5-second grace period and confirm that no files are created.
 - Check frame time, task duration, sickness, ghost visibility, and prediction-horizon range.
 - Freeze delay, prediction, locomotion, obstacle, and logging parameters after the pilot.

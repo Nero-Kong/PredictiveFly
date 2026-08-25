@@ -180,7 +180,7 @@ public class PredictiveFlyExperiment3Controller : MonoBehaviour
     public bool IsFormalRunActive => state == Experiment3State.PreparingTrial
         || state == Experiment3State.RunningTrial;
 
-    void Awake()
+    void OnEnable()
     {
         ResolveReferences();
         ConfigureExperimentComponents();
@@ -188,12 +188,12 @@ public class PredictiveFlyExperiment3Controller : MonoBehaviour
         UpdateScheduledAssignmentPreview();
     }
 
-    void OnEnable()
+    void OnDisable()
     {
-        ResolveReferences();
-        ConfigureExperimentComponents();
-        RefreshCalibrationStatusOnEnable();
-        UpdateScheduledAssignmentPreview();
+        if (Application.isPlaying)
+        {
+            AbortActiveRun("Experiment 3 controller was disabled.");
+        }
     }
 
     void OnValidate()
@@ -206,8 +206,6 @@ public class PredictiveFlyExperiment3Controller : MonoBehaviour
 
     void Update()
     {
-        EnsureExperiment1ControllerDisabled();
-
         if (useKeyboardControls && Input.GetKeyDown(abortKey) && IsFormalRunActive)
         {
             AbortActiveRun("Experimenter abort key pressed.");
@@ -262,11 +260,6 @@ public class PredictiveFlyExperiment3Controller : MonoBehaviour
 
         ResolveReferences();
         ConfigureExperimentComponents();
-        if (experiment2Controller != null && experiment2Controller.IsCalibrationActive)
-        {
-            SetError("Calibration is still running. Complete and save it before starting a formal trial.");
-            return;
-        }
 
         string requestedParticipantId = participantId != null ? participantId.Trim() : string.Empty;
         if (preventAccidentalCompletedTrialRepeat
@@ -608,11 +601,6 @@ public class PredictiveFlyExperiment3Controller : MonoBehaviour
             message = "Participant ID must end with a positive number, for example P001.";
             return false;
         }
-        if (experiment2Controller != null && experiment2Controller.IsCalibrationActive)
-        {
-            message = "Calibration is still active. Complete and save it before formal trials.";
-            return false;
-        }
         if (!TryRefreshCalibrationFromDisk(out message))
         {
             message += " Complete calibration first; the formal trial was not started.";
@@ -837,7 +825,6 @@ public class PredictiveFlyExperiment3Controller : MonoBehaviour
 
     void ConfigureExperimentComponents()
     {
-        EnsureExperiment1ControllerDisabled();
         if (logger != null)
         {
             logger.enabled = true;
@@ -855,22 +842,10 @@ public class PredictiveFlyExperiment3Controller : MonoBehaviour
         {
             locomotion.allowRuntimeVisualizationHotkeys = false;
             locomotion.allowRuntimePredictionHotkey = false;
-            bool calibrationActive = experiment2Controller != null
-                && experiment2Controller.IsCalibrationActive;
-            if (!IsFormalRunActive && !calibrationActive)
+            if (!IsFormalRunActive)
             {
                 locomotion.SetLocomotionInputEnabled(false);
             }
-        }
-    }
-
-    void EnsureExperiment1ControllerDisabled()
-    {
-        PredictiveFlyExperimentController experiment1 =
-            GetComponent<PredictiveFlyExperimentController>();
-        if (experiment1 != null && experiment1.enabled)
-        {
-            experiment1.enabled = false;
         }
     }
 

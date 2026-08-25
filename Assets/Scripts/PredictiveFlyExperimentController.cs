@@ -30,10 +30,14 @@ public class PredictiveFlyExperimentController : MonoBehaviour
     [Min(0f)] public float minimumPreparationSeconds = 0.75f;
     [Min(0.5f)] public float preparationTimeoutSeconds = 8f;
     public bool abortOnBodyAnchorLoss = true;
-    [Min(0.1f)] public float trackingLossGraceSeconds = 0.75f;
+    [Min(0.1f)] public float trackingLossGraceSeconds = 5f;
     public bool recenterAfterTrial = true;
     [Tooltip("Prevent Enter from accidentally repeating a trial that already completed for the same participant.")]
     public bool preventAccidentalCompletedTrialRepeat = true;
+
+    [Header("Output")]
+    [Tooltip("Objective-data directory used by Experiment 1.")]
+    public string objectiveOutputDirectory = "Data/PredictiveFlyObjective";
 
     [Header("References")]
     public PredictiveGhostAvatarLocomotion locomotion;
@@ -71,18 +75,19 @@ public class PredictiveFlyExperimentController : MonoBehaviour
     public string ActiveRouteOrder => activeRouteOrder;
     public string ActiveRouteId => activeRouteId;
 
-    void Awake()
+    void OnEnable()
     {
         ResolveReferences();
         ConfigureExperimentComponents();
         UpdateScheduledAssignmentPreview();
     }
 
-    void OnEnable()
+    void OnDisable()
     {
-        ResolveReferences();
-        ConfigureExperimentComponents();
-        UpdateScheduledAssignmentPreview();
+        if (Application.isPlaying)
+        {
+            AbortTrial("Experiment 1 controller was disabled.");
+        }
     }
 
     void OnValidate()
@@ -443,6 +448,10 @@ public class PredictiveFlyExperimentController : MonoBehaviour
             logger.useKeyboardControls = false;
             logger.stopOnFinish = true;
             logger.stopOnModeChange = true;
+            logger.saveIncompleteTrials = false;
+            logger.outputDirectory = string.IsNullOrWhiteSpace(objectiveOutputDirectory)
+                ? "Data/PredictiveFlyObjective"
+                : objectiveOutputDirectory.Trim();
         }
         if (locomotion != null)
         {

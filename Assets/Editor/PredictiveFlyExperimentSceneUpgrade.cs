@@ -62,7 +62,6 @@ public static class PredictiveFlyExperimentSceneUpgrade
         }
 
         bool needsUpgrade = builder.GetComponent<PredictiveFlyObjectiveLogger>() == null
-            || builder.GetComponent<PredictiveFlyExperimentController>() == null
             || Object.FindFirstObjectByType<IrairaBouCheckpoint>() == null
             || Object.FindFirstObjectByType<IrairaBouFinish>() == null;
         if (!needsUpgrade)

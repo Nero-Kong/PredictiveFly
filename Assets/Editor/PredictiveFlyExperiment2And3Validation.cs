@@ -57,30 +57,20 @@ public static class PredictiveFlyExperiment2And3Validation
             experiment2 = builder.gameObject.AddComponent<PredictiveFlyExperiment2Controller>();
         }
 
-        PredictiveFlyExperimentController experiment1 =
-            builder.GetComponent<PredictiveFlyExperimentController>();
         PredictiveGhostAvatarLocomotion locomotion =
             UnityEngine.Object.FindFirstObjectByType<PredictiveGhostAvatarLocomotion>();
 
-        builder.experimentProtocol =
-            IrairaBou3DOfficialSceneBuilder.ExperimentProtocol.Experiments2And3;
         experiment2.sceneBuilder = builder;
         experiment2.locomotion = locomotion;
         experiment2.experiment3Controller = experiment3;
         experiment2.calibrationOutputDirectory =
             PredictiveFlyExperiment2CalibrationStore.DefaultCalibrationOutputDirectory;
-        experiment2.enabled = true;
         experiment3.sceneBuilder = builder;
         experiment3.logger = logger;
         experiment3.locomotion = locomotion;
         experiment3.experiment2Controller = experiment2;
         experiment3.calibrationOutputDirectory = experiment2.calibrationOutputDirectory;
         experiment3.objectiveOutputDirectory = "Data/PredictiveFlyExperiment3/Objective";
-        experiment3.enabled = true;
-        if (experiment1 != null)
-        {
-            experiment1.enabled = false;
-        }
 
         logger.useKeyboardControls = false;
         logger.enabled = true;
@@ -90,21 +80,16 @@ public static class PredictiveFlyExperiment2And3Validation
         logger.incompleteTrialSubdirectory = "Incomplete";
         logger.outputDirectory = experiment3.objectiveOutputDirectory;
 
-        EditorUtility.SetDirty(builder);
         EditorUtility.SetDirty(experiment2);
         EditorUtility.SetDirty(experiment3);
         EditorUtility.SetDirty(logger);
-        if (experiment1 != null)
-        {
-            EditorUtility.SetDirty(experiment1);
-        }
         EditorSceneManager.MarkSceneDirty(scene);
         if (!EditorSceneManager.SaveScene(scene))
         {
             throw new InvalidOperationException("Official scene could not be saved.");
         }
 
-        Debug.Log("[PredictiveFly] Experiment 2 preference and Experiment 3 formal controllers installed in the official scene.");
+        Debug.Log("[PredictiveFly] Experiment 2 and 3 controllers installed without changing any existing controller enabled state.");
     }
 
     [MenuItem("PredictiveFly/Experiments 2 and 3/Validate Schedule And Scene")]
@@ -524,31 +509,20 @@ public static class PredictiveFlyExperiment2And3Validation
             builder.GetComponent<PredictiveFlyExperiment3Controller>();
         PredictiveFlyExperiment2Controller calibration =
             builder.GetComponent<PredictiveFlyExperiment2Controller>();
-        PredictiveFlyExperimentController experiment1 =
-            builder.GetComponent<PredictiveFlyExperimentController>();
         PredictiveFlyObjectiveLogger logger = builder.GetComponent<PredictiveFlyObjectiveLogger>();
 
-        if (builder.experimentProtocol
-            != IrairaBou3DOfficialSceneBuilder.ExperimentProtocol.Experiments2And3)
+        if (experiment2 == null)
         {
-            Fail("Official scene is not configured for Experiments 2 and 3.");
+            Fail("Experiment 3 controller is missing.");
         }
-        if (experiment2 == null || !experiment2.enabled)
+        if (calibration == null)
         {
-            Fail("Experiment 3 controller is missing or disabled.");
-        }
-        if (calibration == null || !calibration.enabled)
-        {
-            Fail("Experiment 2 preference controller is missing or disabled.");
+            Fail("Experiment 2 preference controller is missing.");
         }
         if (experiment2.experiment2Controller != calibration
             || calibration.experiment3Controller != experiment2)
         {
             Fail("Experiment 2 and Experiment 3 controllers are not cross-linked.");
-        }
-        if (experiment1 != null && experiment1.enabled)
-        {
-            Fail("Experiment 1 controller is still enabled.");
         }
         if (logger == null || logger.saveIncompleteTrials)
         {
@@ -577,21 +551,16 @@ public static class PredictiveFlyExperiment2And3Validation
             IrairaBou3DOfficialSceneBuilder builder =
                 root.AddComponent<IrairaBou3DOfficialSceneBuilder>();
             builder.buildOnEnable = false;
-            builder.experimentProtocol =
-                IrairaBou3DOfficialSceneBuilder.ExperimentProtocol.Experiments2And3;
 
             PredictiveGhostAvatarLocomotion locomotion =
                 root.AddComponent<PredictiveGhostAvatarLocomotion>();
             PredictiveFlyObjectiveLogger logger =
                 root.AddComponent<PredictiveFlyObjectiveLogger>();
-            PredictiveFlyExperimentController experiment1 =
-                root.AddComponent<PredictiveFlyExperimentController>();
             PredictiveFlyExperiment3Controller experiment2 =
                 root.AddComponent<PredictiveFlyExperiment3Controller>();
             PredictiveFlyExperiment2Controller calibration =
                 root.AddComponent<PredictiveFlyExperiment2Controller>();
 
-            experiment1.enabled = false;
             experiment2.sceneBuilder = builder;
             experiment2.logger = logger;
             experiment2.locomotion = locomotion;
@@ -631,11 +600,6 @@ public static class PredictiveFlyExperiment2And3Validation
             {
                 Fail("Synthetic logger did not preserve the Experiment 3 completed-only policy.");
             }
-            if (experiment1.enabled)
-            {
-                Fail("Synthetic Experiment 1 controller remained enabled.");
-            }
-
             ValidatePredictionProfiles(experiment2, locomotion);
             ValidateFactorialConditionSemantics(experiment2, locomotion);
             ValidateCompletedCalibrationGate(experiment2, calibration);

@@ -13,7 +13,7 @@ The two controllers are independent components on `IrairaBou3D Official Scene Bu
 1. `PredictiveFlyExperiment2Controller` runs preference calibration only.
 2. `PredictiveFlyExperiment3Controller` runs measured course trials only.
 
-Both may remain enabled. Their controls do not overlap, and each controller blocks its own movement while the other is active.
+Controller interlocks are intentionally disabled, and the Scene Builder does not install, enable, or disable experiment controllers. Before entering Play Mode, enable only the controller that will be operated and disable the other experiment controllers. Experiment 1 and Experiment 3 both use `Enter`; enabling both would start both workflows from the same key press. Do not switch controllers during an active run.
 
 ## Experiment 2: Preferred Horizon
 
@@ -39,12 +39,13 @@ For each delay, the participant completes a low-anchor and high-anchor adjustmen
 
 ### Procedure
 
-1. Set Participant ID on `PredictiveFlyExperiment2Controller`.
-2. Enter Play Mode and press `F7` or `K` once.
-3. Let the participant adjust the horizon while moving through both straight and curved portions.
-4. Press `Space` only after the participant is satisfied and the minimum run time has elapsed.
-5. Continue until all five delays are complete.
-6. Confirm that the Inspector reports `Calibration complete and saved locally`.
+1. Enable only `PredictiveFlyExperiment2Controller`; disable the Experiment 1 and Experiment 3 controllers.
+2. Set Participant ID on `PredictiveFlyExperiment2Controller`.
+3. Enter Play Mode and press `F7` or `K` once.
+4. Let the participant adjust the horizon while moving through both straight and curved portions.
+5. Press `Space` only after the participant is satisfied and the minimum run time has elapsed.
+6. Continue until all five delays are complete.
+7. Confirm that the Inspector reports `Calibration complete and saved locally`.
 
 Calibration events are written incrementally, but Experiment 3 unlocks only when a completed JSON profile and its matching CSV both exist.
 
@@ -85,13 +86,14 @@ There are six full-course trials. Delay-block order, Current/Personalized order,
 ### Procedure
 
 1. Complete Experiment 2 first, either in the same or an earlier Unity session.
-2. Set the identical Participant ID on `PredictiveFlyExperiment3Controller`.
-3. Set Trial Index to 1.
-4. Press `Enter`. The controller rechecks the completed Experiment 2 files before every trial.
-5. The participant completes the assigned full course.
-6. Read the questionnaire mode code from the Experiment 3 window. After a rest
+2. Enable only `PredictiveFlyExperiment3Controller`; disable the Experiment 1 and Experiment 2 controllers.
+3. Set the identical Participant ID on `PredictiveFlyExperiment3Controller`.
+4. Set Trial Index to 1.
+5. Press `Enter`. The controller rechecks the completed Experiment 2 files before every trial.
+6. The participant completes the assigned full course.
+7. Read the questionnaire mode code from the Experiment 3 window. After a rest
    and questionnaire, set the next Trial Index and press `Enter` again.
-7. Continue through Trial Index 6.
+8. Continue through Trial Index 6.
 
 Movement remains locked until `Enter` successfully prepares the trial. Pressing `Escape`, losing required tracking, stopping Play Mode, or ending before the finish discards the buffered objective data. Only trials that reach the course finish retain the four objective CSV files.
 
@@ -117,4 +119,4 @@ With Play Mode stopped, run:
 
 `PredictiveFly > Experiments 2 and 3 > Validate Schedule And Scene`
 
-The validator checks the five-delay Experiment 2 order and anchor balance, the six-condition Experiment 3 schedule, route balance, prediction semantics, completed-profile gate, completed-only objective policy, scene references, and removal of the prediction-distance cap.
+The validator checks the five-delay Experiment 2 order and anchor balance, the six-condition Experiment 3 schedule, route balance, prediction semantics, completed-profile gate, completed-only objective policy, scene references, and removal of the prediction-distance cap. The validator does not change or validate controller enabled states. The installer preserves existing states, but newly added Unity components start enabled by default; verify the three controller checkboxes before Play Mode.

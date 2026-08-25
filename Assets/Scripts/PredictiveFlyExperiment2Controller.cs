@@ -163,18 +163,19 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
     public bool IsCalibrationActive => state == CalibrationState.Preparing
         || state == CalibrationState.Calibrating;
 
-    void Awake()
+    void OnEnable()
     {
         ResolveReferences();
         ConfigureExperimentComponents();
         UpdateDelayOrderPreview();
     }
 
-    void OnEnable()
+    void OnDisable()
     {
-        ResolveReferences();
-        ConfigureExperimentComponents();
-        UpdateDelayOrderPreview();
+        if (Application.isPlaying)
+        {
+            AbortCalibration("Experiment 2 controller was disabled.");
+        }
     }
 
     void OnValidate()
@@ -195,8 +196,6 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
 
     void Update()
     {
-        EnsureExperiment1ControllerDisabled();
-
         if (useKeyboardControls && Input.GetKeyDown(abortKey) && IsCalibrationActive)
         {
             AbortCalibration("Experimenter abort key pressed.");
@@ -244,11 +243,6 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
 
         ResolveReferences();
         ConfigureExperimentComponents();
-        if (experiment3Controller != null && experiment3Controller.IsFormalRunActive)
-        {
-            SetWarning("A measured Experiment 3 trial is active. Finish or abort it before Experiment 2.");
-            return;
-        }
         if (!TryValidateStaticConfiguration(out string validationMessage))
         {
             SetError(validationMessage);
@@ -793,7 +787,6 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
 
     void ConfigureExperimentComponents()
     {
-        EnsureExperiment1ControllerDisabled();
         if (locomotion == null)
         {
             return;
@@ -803,16 +796,6 @@ public class PredictiveFlyExperiment2Controller : MonoBehaviour
         if (!IsCalibrationActive)
         {
             locomotion.SetLocomotionInputEnabled(false);
-        }
-    }
-
-    void EnsureExperiment1ControllerDisabled()
-    {
-        PredictiveFlyExperimentController experiment1 =
-            GetComponent<PredictiveFlyExperimentController>();
-        if (experiment1 != null && experiment1.enabled)
-        {
-            experiment1.enabled = false;
         }
     }
 

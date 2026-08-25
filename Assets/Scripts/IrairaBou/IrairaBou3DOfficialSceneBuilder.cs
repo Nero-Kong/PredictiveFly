@@ -11,12 +11,6 @@ using UnityEngine.SpatialTracking;
 [DisallowMultipleComponent]
 public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
 {
-    public enum ExperimentProtocol
-    {
-        Experiment1,
-        Experiments2And3
-    }
-
     public enum CourseRouteVariant
     {
         Base,
@@ -50,10 +44,6 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     [Tooltip("Preview/default route. The experiment controller overrides this from Participant ID and Trial Index when Enter is pressed.")]
     public CourseRouteVariant routeVariant;
 
-    [Header("Experiment Protocol")]
-    [Tooltip("Select the experiment protocol. Experiments 2 and 3 use separate preference and formal-trial controllers.")]
-    public ExperimentProtocol experimentProtocol = ExperimentProtocol.Experiment1;
-
     public string RouteId => $"Route_{(char)('A' + (int)routeVariant)}";
 
     [Header("Course Shape")]
@@ -74,7 +64,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
     public float outerTubeRadius = 3.92f;
     [Range(0.2f, 1f)] public float narrowTubeRadiusMultiplier = 0.55f;
     [Range(1f, 2f)] public float expandedTubeRadiusMultiplier = 1.25f;
-    [Range(0.02f, 0.6f)] public float outerTubeAlpha = 0.14f;
+    [Range(0.02f, 0.6f)] public float outerTubeAlpha = 0.35f;
     [Min(12)] public int outerTubeRadialSegments = 48;
     [Tooltip("Shader used for the Fresnel wall and embedded direction guides.")]
     public Shader outerTubeFresnelShader;
@@ -520,7 +510,7 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             return;
         }
 
-        outerTubeAlpha = 0.14f;
+        outerTubeAlpha = 0.35f;
         outerTubeFresnelColor = new Color(0.5f, 0.95f, 1f, 1f);
         outerTubeFresnelAlpha = 0.28f;
         outerTubeFresnelPower = 2.2f;
@@ -1222,37 +1212,12 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
         }
 
         PredictiveFlyExperimentController controller = GetComponent<PredictiveFlyExperimentController>();
-        if (controller == null)
-        {
-            controller = gameObject.AddComponent<PredictiveFlyExperimentController>();
-        }
-
         PredictiveFlyExperiment2Controller experiment2Controller =
             GetComponent<PredictiveFlyExperiment2Controller>();
-        if (experimentProtocol == ExperimentProtocol.Experiments2And3 && experiment2Controller == null)
-        {
-            experiment2Controller = gameObject.AddComponent<PredictiveFlyExperiment2Controller>();
-        }
-
         PredictiveFlyExperiment3Controller experiment3Controller =
             GetComponent<PredictiveFlyExperiment3Controller>();
-        if (experimentProtocol == ExperimentProtocol.Experiments2And3
-            && experiment3Controller == null)
-        {
-            experiment3Controller = gameObject.AddComponent<PredictiveFlyExperiment3Controller>();
-        }
 
-        bool useExperiments2And3 = experimentProtocol == ExperimentProtocol.Experiments2And3;
         logger.enabled = true;
-        controller.enabled = !useExperiments2And3;
-        if (experiment2Controller != null)
-        {
-            experiment2Controller.enabled = useExperiments2And3;
-        }
-        if (experiment3Controller != null)
-        {
-            experiment3Controller.enabled = useExperiments2And3;
-        }
 
         PredictiveFlyRouteMarkerVisualizer legacyMarkerVisualizer = GetComponent<PredictiveFlyRouteMarkerVisualizer>();
         if (legacyMarkerVisualizer != null)
@@ -1260,8 +1225,11 @@ public class IrairaBou3DOfficialSceneBuilder : MonoBehaviour
             legacyMarkerVisualizer.enabled = false;
         }
 
-        controller.sceneBuilder = this;
-        controller.logger = logger;
+        if (controller != null)
+        {
+            controller.sceneBuilder = this;
+            controller.logger = logger;
+        }
         if (experiment2Controller != null)
         {
             experiment2Controller.sceneBuilder = this;

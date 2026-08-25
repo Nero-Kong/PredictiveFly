@@ -2,7 +2,7 @@ Shader "PredictiveFly/Fresnel Directional Tube"
 {
     Properties
     {
-        [HDR] _BaseColor ("Wall Color", Color) = (0.55, 0.9, 1, 0.14)
+        [HDR] _BaseColor ("Wall Color", Color) = (0.55, 0.9, 1, 0.35)
         [HDR] _FresnelColor ("Fresnel Color", Color) = (0.5, 0.95, 1, 1)
         _FresnelAlpha ("Fresnel Alpha", Range(0, 0.8)) = 0.28
         _FresnelPower ("Fresnel Power", Range(0.5, 8)) = 2.2

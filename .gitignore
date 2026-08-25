@@ -24,7 +24,7 @@
 /[Rr]ecordings/
 
 # Local experiment recordings, recovery copies, and generated review artifacts
-/[Dd]ata/PredictiveFlyObjective/
+/[Dd]ata/
 /ProjectBackups/
 /output/
 /outputs/

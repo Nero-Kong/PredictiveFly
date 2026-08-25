@@ -131,7 +131,6 @@ GameObject:
   - component: {fileID: 100002}
   - component: {fileID: 100003}
   - component: {fileID: 100004}
-  - component: {fileID: 100005}
   - component: {fileID: 100006}
   - component: {fileID: 100007}
   m_Layer: 0
@@ -176,7 +175,6 @@ MonoBehaviour:
   repeatingSectionCycles: 3
   helixTransitionFraction: 0.12
   routeVariant: 0
-  experimentProtocol: 1
   railOffset: 0.78
   railRadius: 0.055
   centerLineWidth: 0.085
@@ -190,7 +188,7 @@ MonoBehaviour:
   outerTubeRadius: 3.92
   narrowTubeRadiusMultiplier: 0.55
   expandedTubeRadiusMultiplier: 1.25
-  outerTubeAlpha: 0.14
+  outerTubeAlpha: 0.35
   outerTubeRadialSegments: 48
   outerTubeFresnelShader: {fileID: 4800000, guid: 8f3c1f7ea3254e01b3bf3adf94f1cb75, type: 3}
   outerTubeFresnelColor: {r: 0.5, g: 0.95, b: 1, a: 1}
@@ -246,7 +244,7 @@ MonoBehaviour:
   routeOrder: 
   conditionOrder: 
   experimentConfigId: 
-  outputDirectory: Data/PredictiveFlyExperiment3/Objective
+  outputDirectory: Data/PredictiveFlyObjective
   saveIncompleteTrials: 0
   incompleteTrialSubdirectory: Incomplete
   startOnEnable: 0
@@ -317,24 +315,24 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d8f40260cf6e4f2e95c7d49383f6cb74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyExperimentController
-  participantId: P001
-  trialIndex: 3
+  participantId: P024
+  trialIndex: 4
   useKeyboardControls: 1
   prepareAndStartKey: 13
   abortTrialKey: 27
   minimumPreparationSeconds: 0.75
   preparationTimeoutSeconds: 8
   abortOnBodyAnchorLoss: 1
-  trackingLossGraceSeconds: 0.75
+  trackingLossGraceSeconds: 5
   recenterAfterTrial: 1
-  preventAccidentalCompletedTrialRepeat: 1
+  preventAccidentalCompletedTrialRepeat: 0
+  objectiveOutputDirectory: Data/PredictiveFlyObjective
   locomotion: {fileID: 2052845048}
   logger: {fileID: 100003}
   sceneBuilder: {fileID: 100002}
   autoFindReferences: 1
   state: 0
-  scheduledAssignmentPreview: 'Trial 3: Condition D (DelayedWithPredictiveGhost),
-    Route_D'
+  scheduledAssignmentPreview: 'Trial 4: Condition B (DelayedDroneBody), Route_D'
   activeParticipantId: 
   activeTrialIndex: 0
   activeConditionCode: 
@@ -343,30 +341,6 @@ MonoBehaviour:
   activeRouteId: 
   status: Idle
   trackingLostSince: -1
---- !u!114 &100005
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 100000}
-  m_Enabled: 0
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 3fc90bca4a1b4e28be1661a1a7ac2243, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyRouteMarkerVisualizer
-  tubeBoundary: {fileID: 610189381}
-  checkpointProgress:
-  - 0.18
-  - 0.36
-  - 0.54
-  - 0.72
-  finishProgress: 0.995
-  ringRadius: 0.9
-  lineWidth: 0.045
-  ringSegments: 48
-  checkpointColor: {r: 1, g: 0.82, b: 0.18, a: 1}
-  finishColor: {r: 0.18, g: 1, b: 0.48, a: 1}
 --- !u!114 &100006
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -379,7 +353,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 16054b7311667d5468bc17843aa97461, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyExperiment3Controller
-  participantId: P001
+  participantId: P013
   trialIndex: 1
   useKeyboardControls: 1
   prepareAndStartTrialKey: 13
@@ -416,8 +390,8 @@ MonoBehaviour:
   loadedReferenceMaxYawHorizonSeconds: 0.2
   loadedPredictionMethod: 0
   state: 0
-  scheduledAssignmentPreview: 'Trial 1: D0_Current, Route_A, completed local calibration
-    required'
+  scheduledAssignmentPreview: 'Trial 1 [A_1]: D0_Current, Route_A, completed local
+    calibration required'
   delayOrderPreview: 0>500>1000
   status: Idle
   activeParticipantId: 
@@ -428,6 +402,7 @@ MonoBehaviour:
   activeRouteOrder: 
   activeRouteId: 
   activeMaximumTranslationHorizonSeconds: 0
+  activeQuestionnaireCode:
   trackingLostSince: -1
 --- !u!114 &100007
 MonoBehaviour:
@@ -439,9 +414,9 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: e6c1a936e0524d5da2f7c4debb8d6c7a, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::PredictiveFlyExperiment2Controller
-  participantId: P001
+  participantId: P014
   useKeyboardControls: 1
   beginCalibrationKey: 288
   alternateBeginCalibrationKey: 107
@@ -470,7 +445,7 @@ MonoBehaviour:
   autoFindReferences: 1
   state: 0
   status: Idle
-  delayOrderPreview: 0>250>1000>500>750
+  delayOrderPreview: 750>1000>500>0>250
   calibratedParticipantId: 
   selectedHorizon0Seconds: -1
   selectedHorizon250Seconds: -1
@@ -68738,6 +68713,7 @@ GameObject:
   - component: {fileID: 862604630}
   - component: {fileID: 862604629}
   - component: {fileID: 862604628}
+  - component: {fileID: 862604631}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -68837,6 +68813,50 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
+--- !u!114 &862604631
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 862604626}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a79441f348de89743a2939f4d699eac1, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalCameraData
+  m_RenderShadows: 1
+  m_RequiresDepthTextureOption: 2
+  m_RequiresOpaqueTextureOption: 2
+  m_CameraType: 0
+  m_Cameras: []
+  m_RendererIndex: -1
+  m_VolumeLayerMask:
+    serializedVersion: 2
+    m_Bits: 1
+  m_VolumeTrigger: {fileID: 0}
+  m_VolumeFrameworkUpdateModeOption: 2
+  m_RenderPostProcessing: 0
+  m_Antialiasing: 0
+  m_AntialiasingQuality: 2
+  m_StopNaN: 0
+  m_Dithering: 0
+  m_ClearDepth: 1
+  m_AllowXRRendering: 1
+  m_AllowHDROutput: 1
+  m_UseScreenCoordOverride: 0
+  m_ScreenSizeOverride: {x: 0, y: 0, z: 0, w: 0}
+  m_ScreenCoordScaleBias: {x: 0, y: 0, z: 0, w: 0}
+  m_RequiresDepthTexture: 0
+  m_RequiresColorTexture: 0
+  m_TaaSettings:
+    m_Quality: 3
+    m_FrameInfluence: 0.1
+    m_JitterScale: 1
+    m_MipBias: 0
+    m_VarianceClampScale: 0.9
+    m_ContrastAdaptiveSharpening: 0
+  m_Version: 2
 --- !u!1 &865078875
 GameObject:
   m_ObjectHideFlags: 0
@@ -102667,9 +102687,9 @@ Material:
     - _XRMotionVectorsPass: 1
     - _ZWrite: 0
     m_Colors:
-    - _BaseColor: {r: 0.55, g: 0.9, b: 1, a: 0.18}
-    - _Color: {r: 0.54999995, g: 0.9, b: 1, a: 0.18}
-    - _EmissionColor: {r: 0.33, g: 0.54, b: 0.6, a: 0.10800001}
+    - _BaseColor: {r: 0.55, g: 0.9, b: 1, a: 0.35}
+    - _Color: {r: 0.54999995, g: 0.9, b: 1, a: 0.35}
+    - _EmissionColor: {r: 0.33, g: 0.54, b: 0.6, a: 0.21}
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
